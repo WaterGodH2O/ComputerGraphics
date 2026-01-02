@@ -1,0 +1,6 @@
+移动
+const moveSpeed = 100; // units per second
+// Smoothed movement (EMA)
+const smoothedMove = { forward: 0, right: 0 };
+const movementSmoothing = 10;
+其中光滑移动用于处理偶尔卡顿造成的过大dt

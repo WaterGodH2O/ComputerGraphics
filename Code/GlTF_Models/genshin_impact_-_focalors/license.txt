@@ -1,0 +1,11 @@
+Model Information:
+* title:	Genshin impact - Focalors
+* source:	https://sketchfab.com/3d-models/genshin-impact-focalors-c595836c64494414bc6f585cd813ea37
+* author:	X9_YT (https://sketchfab.com/X9_YT)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Genshin impact - Focalors" (https://sketchfab.com/3d-models/genshin-impact-focalors-c595836c64494414bc6f585cd813ea37) by X9_YT (https://sketchfab.com/X9_YT) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
