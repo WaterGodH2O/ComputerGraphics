@@ -11,8 +11,15 @@ import RAPIER from "../Common/node_modules/@dimforge/rapier3d-compat/rapier.mjs"
 let camera, fpsCamera, controls, fpsControls, scene, renderer, canvas, world, map_city  ;
 let sun, sunHelper, sunCamHelper;
 let stats;
-const dynamicGltfObjects = [];
+
+// step 时会更新
+const dynamicGltfObjects = []; // 动态 glTF 对象列表，用于同步位置
+const mixers = []; // 动画混合器列表，用于播放动画
+const zombies = [];          // 多个僵尸/动态物体的句柄列表
+const zombieMixers = [];     // 多个僵尸动画混合器列表
 const DEBUG = true;
+
+
 let colliderDebugs = [];
 let lowFps = Infinity;
 let lastRafTs = null;
@@ -21,11 +28,13 @@ let posEl;
 let lowFpsResetId;
 // FPS character controller state
 let charController, playerBody, playerCollider;
+let zombieCharController;
 const capsule = { radius: 1.6, halfHeight: 7 }; // total height ~ 1.8m
 const cameraYOffset = capsule.halfHeight; // place eye near top of capsule
 let activeCamera, activeControls;
 const clock = new THREE.Clock();
 let mixer = null;
+
 scene = new THREE.Scene();
 const physics = await initPhysics(scene);
 // expose rapier world for custom colliders
@@ -206,11 +215,14 @@ function createStaticGLTF({
 }
 
 // glTF 动态对象工厂：根据包围盒生成球/盒近似碰撞体，创建动态刚体并注册同步
+// 渲染位置已经同步于刚体运动 step时会遍历dynamicGltfObjects列表，取出其中每个元素的sync同步位置
 function createDynamicGLTF({
   object3d,
   position = [0, 0, 0],
   rotation = [0, 0, 0],
   scale = [1, 1, 1],
+  // Additional multiplier for physics collider size (does not affect visuals)
+  colliderScale = [1, 1, 1],
   enableShadows = true,
   shape = 'sphere', // 'sphere' | 'box'
   density = 1.0,
@@ -219,6 +231,8 @@ function createDynamicGLTF({
   damping = { lin: 0.05, ang: 0.05 },
   canSleep = true,
   enableCcd = true,
+  // 保持直立：禁止绕 X/Z 旋转，只允许绕 Y 旋转
+  lockXZRotation = false,
   rapier = RAPIER,
   rapierWorld = world,
   renderOffset
@@ -264,9 +278,15 @@ function createDynamicGLTF({
   // 碰撞体：默认球体更稳定；可选盒体/复合盒
   const colliders = [];
   if (shape === 'box') {
+    const sx = Math.max(colliderScale[0] ?? 1, 0.0001);
+    const sy = Math.max(colliderScale[1] ?? 1, 0.0001);
+    const sz = Math.max(colliderScale[2] ?? 1, 0.0001);
+    const hx = Math.max(size.x * 0.5 * sx, 0.01);
+    const hy = Math.max(size.y * 0.5 * sy, 0.01);
+    const hz = Math.max(size.z * 0.5 * sz, 0.01);
     const collider = rapierWorld.createCollider(
       rapier.ColliderDesc
-        .cuboid(Math.max(size.x * 0.5, 0.01), Math.max(size.y * 0.5, 0.01), Math.max(size.z * 0.5, 0.01))
+        .cuboid(hx, hy, hz)
         .setDensity(density)
         .setFriction(friction)
         .setRestitution(restitution),
@@ -276,7 +296,7 @@ function createDynamicGLTF({
     // debug collider
     addColliderDebugBoxForBody(
       body,
-      new THREE.Vector3(Math.max(size.x * 0.5, 0.01), Math.max(size.y * 0.5, 0.01), Math.max(size.z * 0.5, 0.01)),
+      new THREE.Vector3(hx, hy, hz),
       new THREE.Vector3(0, 0, 0),
       0x00ffff
     );
@@ -303,9 +323,12 @@ function createDynamicGLTF({
         if (tmpSizeWorld.x < 0.01 && tmpSizeWorld.y < 0.01 && tmpSizeWorld.z < 0.01) return;
         // transform to body local
         const centerLocal = tmpCenterWorld.clone().applyMatrix4(bodyMatrixInv);
-        const hx = Math.max(tmpSizeWorld.x * 0.5, 0.005);
-        const hy = Math.max(tmpSizeWorld.y * 0.5, 0.005);
-        const hz = Math.max(tmpSizeWorld.z * 0.5, 0.005);
+        const sx = Math.max(colliderScale[0] ?? 1, 0.0001);
+        const sy = Math.max(colliderScale[1] ?? 1, 0.0001);
+        const sz = Math.max(colliderScale[2] ?? 1, 0.0001);
+        const hx = Math.max(tmpSizeWorld.x * 0.5 * sx, 0.005);
+        const hy = Math.max(tmpSizeWorld.y * 0.5 * sy, 0.005);
+        const hz = Math.max(tmpSizeWorld.z * 0.5 * sz, 0.005);
         addColliderDebugBoxForBody(
           body,
           new THREE.Vector3(hx, hy, hz),
@@ -315,7 +338,8 @@ function createDynamicGLTF({
       });
     }
   } else {
-    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 0.5;
+    const scl = Math.max(colliderScale[0] ?? 1, colliderScale[1] ?? 1, colliderScale[2] ?? 1);
+    const radius = (Math.max(size.x, size.y, size.z) * 0.5 || 0.5) * Math.max(scl, 0.0001);
     const collider = rapierWorld.createCollider(
       rapier.ColliderDesc
         .ball(radius)
@@ -329,15 +353,24 @@ function createDynamicGLTF({
 
 
 
-  if (enableCcd && typeof body.enableCcd === 'function') body.enableCcd(true);
+  if (enableCcd) body.enableCcd(true);
+  // 锁定 X/Z 旋转以防跌倒，并增加角阻尼帮助稳定
+  if (lockXZRotation) {
+    body.setEnabledRotations(false, true, false, true);
+    const angDamp = Math.max(damping.ang ?? 0.05, 2.0);
+    body.setAngularDamping(angDamp);
+  }
 
   // 注册同步（每帧从刚体同步到可视对象）
-
+  
   function syncFunc() {
     const t = body.translation();
     const r = body.rotation();
-    object3d.position.set(t.x + renderOffset.x, t.y + renderOffset.y, t.z + renderOffset.z);
-    object3d.quaternion.set(r.x, r.y, r.z, r.w);
+    const q = new THREE.Quaternion(r.x, r.y, r.z, r.w);
+    // calculate offset in world space, instead of local space
+    const offsetWorld = new THREE.Vector3(renderOffset.x, renderOffset.y, renderOffset.z).applyQuaternion(q);
+    object3d.position.set(t.x + offsetWorld.x, t.y + offsetWorld.y, t.z + offsetWorld.z);
+    object3d.quaternion.copy(q);
   }
   const entry = {
     object: object3d,
@@ -355,7 +388,8 @@ const movement = {
   forward: false,
   backward: false,
   left: false,
-  right: false
+  right: false,
+  zombiesForward: false
 };
 const moveSpeed = 100; // units per second
 // Smoothed movement (EMA)
@@ -595,6 +629,19 @@ function main() {
     charController.setCharacterMass(800); // 近似人体质量，可按需要调整
   }
 
+  // Create separate character controller for zombies (independent state)
+  {
+    zombieCharController = world.createCharacterController(1);
+    zombieCharController.setUp({ x: 0, y: 1, z: 0 });
+    zombieCharController.setSlideEnabled(true);
+    zombieCharController.enableAutostep(0.4, 0.3, false);
+    zombieCharController.setMaxSlopeClimbAngle(Math.PI * 0.5);
+    zombieCharController.setMinSlopeSlideAngle(Math.PI * 0.9);
+    zombieCharController.enableSnapToGround(0.3);
+    zombieCharController.setApplyImpulsesToDynamicBodies(true);
+    zombieCharController.setCharacterMass(200); // 更轻一些
+  }
+
   // 统一初始化 HUD
   initPerfHUD();
 
@@ -650,6 +697,23 @@ function main() {
       case 'KeyS': movement.backward = true; break;
       case 'KeyA': movement.left = true; break;
       case 'KeyD': movement.right = true; break;
+      case 'KeyT': movement.zombiesForward = true; break;
+      case 'KeyY': {
+        // 以玩家位置或相机位置为中心批量生成僵尸
+        let c = null;
+        if (playerBody && typeof playerBody.translation === 'function') {
+          const t = playerBody.translation();
+          c = [t.x, t.y, t.z];
+        } else if (fpsCamera) {
+          const p = fpsCamera.position;
+          c = [p.x, p.y, p.z];
+        } else {
+          const p = camera.position;
+          c = [p.x, p.y, p.z];
+        }
+        if (c) spawnZombiesAround(c, 5, 30);
+        break;
+      }
       case 'Space':
         if (activeControls === fpsControls) requestJump = true;
         break;
@@ -662,6 +726,7 @@ function main() {
       case 'KeyS': movement.backward = false; break;
       case 'KeyA': movement.left = false; break;
       case 'KeyD': movement.right = false; break;
+      case 'KeyT': movement.zombiesForward = false; break;
     }
   }
   window.addEventListener('keydown', onKeyDown);
@@ -686,8 +751,9 @@ function main() {
     });
 
     if (gltf.animations && gltf.animations.length > 0) {
-      mixer = new THREE.AnimationMixer(gltf.scene);
-      const action = mixer.clipAction(gltf.animations[0]);
+      const m = new THREE.AnimationMixer(gltf.scene);
+      mixers.push(m);
+      const action = m.clipAction(gltf.animations[0]);
       action.play(); //激活动作 然后在渲染部分调用mixer.update(dt)更新动作
     }
     
@@ -702,8 +768,6 @@ function main() {
   // 动态 glTF 示例（使用动态工厂）
   const dynLoader = new GLTFLoader();
   dynLoader.load('../GlTF_Models/glTF/Vehicle_Pickup_Armored.gltf', function (gltf) {
-
-    
     createDynamicGLTF({
       object3d: gltf.scene,
       position: [-441, 20, -22],
@@ -727,30 +791,118 @@ function main() {
   });
 
 
-  dynLoader.load('../GlTF_Models/glTF/Zombie_Basic.gltf', function (gltf) {
+  async function createZombieAt(position) {
+    return new Promise((resolve) => {
+      dynLoader.load('../GlTF_Models/glTF/Zombie_Basic.gltf', function (gltf) {
+        const z = createDynamicGLTF({
+          object3d: gltf.scene,
+          position: position,
+          rotation: [0, 0, 0],
+          scale: [10, 10, 10],
+          enableShadows: true,
+          shape: 'compound',
+          density: 1.0,
+          friction: 0.8,
+          restitution: 0.1,
+          damping: { lin: 0.1, ang: 0.1 },
+          canSleep: true,
+          enableCcd: true,
+          renderOffset: { x: 0, y: -5, z: 0 },
+          colliderScale: [0.5, 1.1, 0.8],
+          lockXZRotation: true
+        });
+        zombies.push(z);
+        if (z && z.rigidBody) {
+          z.rigidBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+        }
+        z.vy = 0;
+        // 僵尸状态：'idle' | 'moving' | （未来可扩展 'dead'）
+        z.state = 'idle';
+        // 生命值（为 0 时置为 'dead' 并停止移动）
+        z.health = 100;
+        // 禁用原模型复合盒与地面的实体碰撞，避免与控制器胶囊互相干扰（保留渲染/同步）
+        // 真的应该这么做吗？。。。。先mark一下 不太确定
 
-    
-    createDynamicGLTF({
-      object3d: gltf.scene,
-      position: [-207, 20, -41],
-      rotation: [0, 0, 0],
-      scale: [10, 10, 10],
-      enableShadows: true,
-      shape: 'compound',            // 或 'sphere'
-      density: 1.0,
-      friction: 0.8,
-      restitution: 0.1,
-      damping: { lin: 0.1, ang: 0.1 },
-      canSleep: true,
-      enableCcd: true,
-      renderOffset: { x: 0, y: -5, z: 0 }
+        for (const c of z.colliders) {
+        c.setSensor(true);
+        }
+
+
+    // 角色控制用胶囊
+        const bbox = new THREE.Box3().setFromObject(z.object);
+        const size = new THREE.Vector3();
+        bbox.getSize(size);
+        const minRadius = 0.2;
+        const radius = Math.max(minRadius, Math.min(size.x, size.z) * 0.35);
+        const halfHeight = Math.max(0.1, (size.y * 0.5) - radius) + 3;
+        const ctrl = world.createCollider(
+          RAPIER.ColliderDesc.capsule(halfHeight, radius)
+            .setFriction(0.0)
+            .setRestitution(0.0),
+          z.rigidBody
+        );
+        z.controllerCollider = ctrl;
+        addColliderDebugCapsuleForBody(z.rigidBody, halfHeight, radius, 0x00ff00);
+
+        // 每个僵尸独立的角色控制器（避免共享控制器导致状态干扰）
+        z.kcc = world.createCharacterController(1);
+        z.kcc.setUp({ x: 0, y: 1, z: 0 });
+        z.kcc.setSlideEnabled(true);
+        z.kcc.enableAutostep(0.4, 0.3, false);
+        z.kcc.setMaxSlopeClimbAngle(Math.PI * 0.5);
+        z.kcc.setMinSlopeSlideAngle(Math.PI * 0.9);
+        z.kcc.enableSnapToGround(0.3);
+        z.kcc.setApplyImpulsesToDynamicBodies(true);
+        z.kcc.setCharacterMass(200);
+
+        // 动画
+        const zm = new THREE.AnimationMixer(gltf.scene);
+        zombieMixers.push(zm);
+        mixers.push(zm);
+        // 记录到僵尸对象上，便于按状态切换动画
+        z.mixer = zm;
+        z.animations = gltf.animations;
+        z.currentAction = null;
+        z.currentAnimIndex = null;
+        // 初始状态为 idle，则播放索引 3 的动画（若存在）
+
+        const act = zm.clipAction(gltf.animations[3]);
+        act.reset().setLoop(THREE.LoopRepeat).play();
+        z.currentAction = act;
+        z.currentAnimIndex = 3;
+
+
+        resolve(z);
+      }, undefined, function (error) {
+        console.error(error);
+        resolve(null);
+      });
     });
+  }
 
-  }, undefined, function (error) {
+  // 示例：创建一个僵尸在原先位置
+  createZombieAt([-207, 20, -41]);
+  createZombieAt([-217, 20, -21]);
+  createZombieAt([-208, 30, -41]);
+  createZombieAt([-237, 20, -41]);
 
-    console.error(error);
+  // 在一个中心点周围随机选点生成僵尸
+  async function spawnZombiesAround(center, count = 5, radius = 30) {
+    const cx = Array.isArray(center) ? center[0] : center.x;
+    const cy = Array.isArray(center) ? center[1] : center.y;
+    const cz = Array.isArray(center) ? center[2] : center.z;
+    const tasks = [];
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const dist = Math.sqrt(Math.random()) * radius;
+      const x = cx + Math.cos(ang) * dist;
+      const z = cz + Math.sin(ang) * dist;
+      const y = cy;
+      tasks.push(createZombieAt([x, y, z]));
+    }
+    return Promise.all(tasks);
+  }
 
-  });
 
   // 统一光照初始化（debug=false 不显示 helper）
   initLighting(DEBUG);
@@ -775,6 +927,113 @@ function resizeRendererToDisplaySize(renderer) {
 }
 
 function render(ts) {
+
+  function updateZombies(dt) {
+    if (!(zombies && zombies.length > 0)) return;
+    // 若未按下 T：仅将非死亡的僵尸标记为 idle 并确保播放 idle 动画；死亡保持 dead
+    if (!(movement && movement.zombiesForward)) {
+      for (const z of zombies) {
+        if (!z) continue;
+        if (typeof z.health === 'number' && z.health <= 0) {
+          z.state = 'dead';
+          continue;
+        }
+        if (z.state !== 'dead') {
+          z.state = 'idle';
+          // 播放 idle 动画（索引 3），避免重复切换
+
+        if (z.currentAnimIndex !== 3) {
+            if (z.currentAction && typeof z.currentAction.stop === 'function') {
+            z.currentAction.stop();
+            }
+            const act = z.mixer.clipAction(z.animations[3]);
+            act.reset().setLoop(THREE.LoopRepeat).play();
+            z.currentAction = act;
+            z.currentAnimIndex = 3;
+        }
+
+        }
+      }
+      return;
+    }
+    const moveSpeed = 10; // 可按需要调整速度（单位：m/s）
+    for (const z of zombies) {
+      if (!z || !z.rigidBody || !z.kcc) continue;
+      // 死亡则不再移动
+      if (typeof z.health === 'number' && z.health <= 0) {
+        z.state = 'dead';
+        continue;
+      }
+      z.state = 'moving';
+      // 播放“移动”动画：索引 13（若已是 13 则不重复切换）
+      if (z.currentAnimIndex !== 13) {
+        if (z.currentAction && typeof z.currentAction.stop === 'function') {
+          z.currentAction.stop();
+        }
+        const act = z.mixer.clipAction(z.animations[13]);
+        act.reset().setLoop(THREE.LoopRepeat).play();
+        z.currentAction = act;
+        z.currentAnimIndex = 13;
+      }
+
+      // 定期随机设定目标朝向（绕 Y 轴），并以一定角速度转向
+      z.turnTime = (typeof z.turnTime === 'number') ? z.turnTime : 0;
+      z.turnTime -= dt;
+      if (typeof z.targetYaw !== 'number') {
+        const initQ = new THREE.Quaternion(z.rigidBody.rotation().x, z.rigidBody.rotation().y, z.rigidBody.rotation().z, z.rigidBody.rotation().w);
+        const initE = new THREE.Euler().setFromQuaternion(initQ, 'YXZ');
+        z.targetYaw = initE.y;
+        z.turnTime = 0;
+      }
+      if (z.turnTime <= 0) {
+        z.targetYaw = Math.random() * Math.PI * 2;
+        z.turnTime = 0.8 + Math.random() * 1.2;
+      }
+      const curQ = new THREE.Quaternion(z.rigidBody.rotation().x, z.rigidBody.rotation().y, z.rigidBody.rotation().z, z.rigidBody.rotation().w);
+      const curE = new THREE.Euler().setFromQuaternion(curQ, 'YXZ');
+      const curYaw = curE.y;
+      let deltaYaw = z.targetYaw - curYaw;
+      deltaYaw = ((deltaYaw + Math.PI) % (Math.PI * 2)) - Math.PI;
+      const turnSpeed = Math.PI;
+      const maxStep = turnSpeed * dt;
+      const step = THREE.MathUtils.clamp(deltaYaw, -maxStep, maxStep);
+      const newYaw = curYaw + step;
+      const faceQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), newYaw);
+      if (typeof z.rigidBody.setNextKinematicRotation === 'function') {
+        z.rigidBody.setNextKinematicRotation({ x: faceQuat.x, y: faceQuat.y, z: faceQuat.z, w: faceQuat.w });
+      }
+
+      // 按当前面朝方向前进
+      const forwardDir = new THREE.Vector3(0, 0, 1).applyQuaternion(faceQuat).normalize();
+
+      // 重力
+      // z.vy = (typeof z.vy === 'number') ? z.vy : 0;
+      z.vy += gravityAccel * dt;
+      if (z.vy < terminalFallSpeed) z.vy = terminalFallSpeed;
+
+      // 期望位移
+      const desired = {
+        x: forwardDir.x * moveSpeed * dt,
+        y: z.vy * dt,
+        z: forwardDir.z * moveSpeed * dt
+      };
+
+      // 碰撞感知位移
+      const controllerCollider = z.controllerCollider ?? (z.colliders && z.colliders[0]);
+      if (!controllerCollider) continue;
+      z.kcc.computeColliderMovement(controllerCollider, desired);
+      const delta = z.kcc.computedMovement();
+
+      // 推进
+      const cur = z.rigidBody.translation();
+      z.rigidBody.setNextKinematicTranslation({ x: cur.x + delta.x, y: cur.y + delta.y, z: cur.z + delta.z });
+
+      // 落地清零竖直速度
+      if (z.kcc.computedGrounded() && z.vy < 0) {
+        z.vy = 0;
+      }
+    }
+  }
 
   if (stats) stats.begin();
 
@@ -862,7 +1121,12 @@ function render(ts) {
 
   renderer.render(scene, activeCamera);
   // 更新动画模块
-  if (mixer) mixer.update(dt);
+  if (mixers && mixers.length > 0) {
+    for (const m of mixers) m.update(dt);
+  }
+
+  // 僵尸移动逻辑
+  updateZombies(dt);
 
   // 每帧推进物理世界
   physics.step(dt);
