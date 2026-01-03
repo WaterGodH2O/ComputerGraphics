@@ -17,7 +17,7 @@ const dynamicGltfObjects = []; // 动态 glTF 对象列表，用于同步位置
 const mixers = []; // 动画混合器列表，用于播放动画
 const zombies = [];          // 多个僵尸/动态物体的句柄列表
 const zombieMixers = [];     // 多个僵尸动画混合器列表
-const DEBUG = true;
+let DEBUG = true;
 
 
 let colliderDebugs = [];
@@ -88,6 +88,38 @@ function initPerfHUD() {
   }, 5000);
 }
 
+// 左上角 DEBUG 开关
+function initDebugToggle() {
+  const label = document.createElement('label');
+  label.style.position = 'fixed';
+  label.style.top = '0';
+  label.style.left = '0';
+  label.style.padding = '4px 8px';
+  label.style.fontFamily = 'monospace';
+  label.style.fontSize = '12px';
+  label.style.background = 'rgba(0,0,0,0.5)';
+  label.style.color = '#fff';
+  label.style.zIndex = '10001';
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!DEBUG;
+  cb.style.marginRight = '6px';
+  cb.addEventListener('change', () => {
+    DEBUG = cb.checked;
+    if (sunHelper) sunHelper.visible = DEBUG;
+    if (sunCamHelper) sunCamHelper.visible = DEBUG;
+    if (Array.isArray(colliderDebugs)) {
+      for (const d of colliderDebugs) {
+        if (d && typeof d.visible !== 'undefined') d.visible = DEBUG;
+      }
+    }
+  });
+
+  label.appendChild(cb);
+  label.appendChild(document.createTextNode('DEBUG'));
+  document.body.appendChild(label);
+}
 // 初始化场景光照（支持调试 helper 开关）
 function initLighting(debug = false) {
   // 环境光
@@ -147,6 +179,12 @@ function initSkybox() {
   );
 }
 
+function updateMixers(mixers, dt) {
+    if (mixers && mixers.length > 0) {
+      for (const m of mixers) m.update(dt);
+    }
+  }
+  
 // ---- Collider debug helpers ----
 
 function addColliderDebugBoxForBody(body, halfExtents, localOffset = new THREE.Vector3(), color = 0x00ffff) {
@@ -224,9 +262,13 @@ function createDynamicGLTF({
   // Additional multiplier for physics collider size (does not affect visuals)
   colliderScale = [1, 1, 1],
   enableShadows = true,
-  shape = 'sphere', // 'sphere' | 'box'
-  density = 1.0,
-  friction = 0.7,
+  shape = 'sphere', // 'sphere' | 'box' | 'compound'
+  // Preferred: explicitly set total mass for this rigid body; overrides density if provided
+  targetMass = undefined,
+  // Fallback density when targetMass is not provided
+  density = 0.05,
+  // Lower default friction to make objects easier to push
+  friction = 0.3,
   restitution = 0.0,
   damping = { lin: 0.05, ang: 0.05 },
   canSleep = true,
@@ -284,15 +326,16 @@ function createDynamicGLTF({
     const hx = Math.max(size.x * 0.5 * sx, 0.01);
     const hy = Math.max(size.y * 0.5 * sy, 0.01);
     const hz = Math.max(size.z * 0.5 * sz, 0.01);
-    const collider = rapierWorld.createCollider(
-      rapier.ColliderDesc
+    {
+      const desc = rapier.ColliderDesc
         .cuboid(hx, hy, hz)
-        .setDensity(density)
         .setFriction(friction)
-        .setRestitution(restitution),
-      body
-    );
-    colliders.push(collider);
+        .setRestitution(restitution);
+      // Only add density-based mass when no explicit targetMass is given
+      if (typeof targetMass === 'undefined') desc.setDensity(density);
+      const collider = rapierWorld.createCollider(desc, body);
+      colliders.push(collider);
+    }
     // debug collider
     addColliderDebugBoxForBody(
       body,
@@ -300,8 +343,16 @@ function createDynamicGLTF({
       new THREE.Vector3(0, 0, 0),
       0x00ffff
     );
+    
   } else if (shape === 'compound') {
-    const created = addCompoundBoxCollidersFromMesh(rapier, rapierWorld, body, object3d, { density, friction, restitution });
+    // When targetMass is provided, skip per-collider density so total mass can be set explicitly.
+    const created = addCompoundBoxCollidersFromMesh(
+      rapier,
+      rapierWorld,
+      body,
+      object3d,
+      { density: (typeof targetMass === 'undefined') ? density : undefined, friction, restitution }
+    );
     for (const c of created) colliders.push(c);
     // debug compound box colliders
     {
@@ -340,25 +391,32 @@ function createDynamicGLTF({
   } else {
     const scl = Math.max(colliderScale[0] ?? 1, colliderScale[1] ?? 1, colliderScale[2] ?? 1);
     const radius = (Math.max(size.x, size.y, size.z) * 0.5 || 0.5) * Math.max(scl, 0.0001);
-    const collider = rapierWorld.createCollider(
-      rapier.ColliderDesc
+    {
+      const desc = rapier.ColliderDesc
         .ball(radius)
-        .setDensity(density)
         .setFriction(friction)
-        .setRestitution(restitution),
-      body
-    );
-    colliders.push(collider);
+        .setRestitution(restitution);
+      // Only add density-based mass when no explicit targetMass is given
+      if (typeof targetMass === 'undefined') desc.setDensity(density);
+      const collider = rapierWorld.createCollider(desc, body);
+      colliders.push(collider);
+    }
   }
 
+  // If explicit target mass is requested, set it on the rigid body (overrides collider-based mass)
+  if (typeof targetMass === 'number' && isFinite(targetMass) && targetMass > 0 && typeof body.setAdditionalMass === 'function') {
+    body.setAdditionalMass(targetMass, true);
+  }
 
 
   if (enableCcd) body.enableCcd(true);
   // 锁定 X/Z 旋转以防跌倒，并增加角阻尼帮助稳定
   if (lockXZRotation) {
-    body.setEnabledRotations(false, true, false, true);
-    const angDamp = Math.max(damping.ang ?? 0.05, 2.0);
-    body.setAngularDamping(angDamp);
+    // body.setEnabledRotations(false, true, false, true);
+    // const angDamp = Math.max(damping.ang ?? 0.05, 2.0);
+
+    // const angDamp = 1.0;
+    // body.setAngularDamping(angDamp);
   }
 
   // 注册同步（每帧从刚体同步到可视对象）
@@ -391,6 +449,8 @@ const movement = {
   right: false,
   zombiesForward: false
 };
+// Player held slot/state (1..4)
+let playerHeld = 1;
 const moveSpeed = 100; // units per second
 // Smoothed movement (EMA)
 const smoothedMove = { forward: 0, right: 0 };
@@ -564,9 +624,7 @@ export async function initPhysics(scene) {
     };
   }
   
-  /* ---------------------------
-     你在主循环里这样用：
-  -----------------------------
+  /* 
   
   const clock = new THREE.Clock();
   const physics = await initPhysics(scene);
@@ -616,6 +674,9 @@ function main() {
         .setRestitution(0.0),
       playerBody
     );
+    // Player belongs to bit 0; filter collides with everything except zombies (bit 1)
+    // groups = (membership << 16) | filter
+    playerCollider.setCollisionGroups((0x0001 << 16) | (0xFFFF ^ 0x0002));
     // debug player capsule
     addColliderDebugCapsuleForBody(playerBody, capsule.halfHeight, capsule.radius, 0xff00ff);
     charController = world.createCharacterController(1); // small character controller offset
@@ -629,21 +690,11 @@ function main() {
     charController.setCharacterMass(800); // 近似人体质量，可按需要调整
   }
 
-  // Create separate character controller for zombies (independent state)
-  {
-    zombieCharController = world.createCharacterController(1);
-    zombieCharController.setUp({ x: 0, y: 1, z: 0 });
-    zombieCharController.setSlideEnabled(true);
-    zombieCharController.enableAutostep(0.4, 0.3, false);
-    zombieCharController.setMaxSlopeClimbAngle(Math.PI * 0.5);
-    zombieCharController.setMinSlopeSlideAngle(Math.PI * 0.9);
-    zombieCharController.enableSnapToGround(0.3);
-    zombieCharController.setApplyImpulsesToDynamicBodies(true);
-    zombieCharController.setCharacterMass(200); // 更轻一些
-  }
+
 
   // 统一初始化 HUD
   initPerfHUD();
+  initDebugToggle();
 
   // Set active camera/controls default to orbit
   activeCamera = camera;
@@ -698,6 +749,14 @@ function main() {
       case 'KeyA': movement.left = true; break;
       case 'KeyD': movement.right = true; break;
       case 'KeyT': movement.zombiesForward = true; break;
+      case 'Digit1': playerHeld = 1; break;
+      case 'Numpad1': playerHeld = 1; break;
+      case 'Digit2': playerHeld = 2; break;
+      case 'Numpad2': playerHeld = 2; break;
+      case 'Digit3': playerHeld = 3; break;
+      case 'Numpad3': playerHeld = 3; break;
+      case 'Digit4': playerHeld = 4; break;
+      case 'Numpad4': playerHeld = 4; break;
       case 'KeyY': {
         // 以玩家位置或相机位置为中心批量生成僵尸
         let c = null;
@@ -732,13 +791,53 @@ function main() {
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
 
+  // FPS-only primary button (left mouse) callback hook
+  function onFpsPrimaryFire(e) {
+    // Raycast from FPS camera forward; render a small sphere at the hit point (or a far point if no hit)
+    const raycaster = new THREE.Raycaster();
+    const origin = new THREE.Vector3().copy(fpsCamera.position);
+    const dir = new THREE.Vector3();
+    fpsCamera.getWorldDirection(dir);
+    raycaster.set(origin, dir);
+    const hits = raycaster.intersectObjects(scene.children, true);
+    let point = null;
+    if (hits && hits.length > 0) {
+      const hit = hits[0];
+      point = hit.point.clone();
+      const owner = hit.object && hit.object.userData ? hit.object.userData.owner : null;
+      console.log('Hit target:', owner || hit.object);
+    } else {
+      // no intersection: place marker at a far point along the ray
+      point = origin.clone().add(dir.clone().multiplyScalar(1000));
+      console.log('Hit target: none');
+    }
+    // Place a green sphere at the decided point (auto-remove after a short delay)
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+    );
+    marker.position.copy(point);
+    scene.add(marker);
+    setTimeout(() => {
+      scene.remove(marker);
+      if (marker.geometry) marker.geometry.dispose();
+      if (marker.material) marker.material.dispose();
+    }, 1000);
+  }
+  function onMouseDown(e) {
+    if (activeControls === fpsControls && fpsControls.isLocked && e.button === 0) {
+      onFpsPrimaryFire(e);
+    }
+  }
+  window.addEventListener('mousedown', onMouseDown);
+
 
   scene.background = new THREE.Color('black');
 
 
 
   const loader = new GLTFLoader();
-
+  // load city building set 1
   loader.load('../GlTF_Models/ccity_building_set_1/scene.gltf', function (gltf) {
 
       const { rigidBody } = createStaticGLTF({
@@ -775,8 +874,9 @@ function main() {
       scale: [10, 10, 10],
       enableShadows: true,
       shape: 'compound',            // 或 'sphere'
-      density: 2.0,
-      friction: 0.8,
+      // Use explicit mass and lower friction to make it pushable
+      targetMass: 200,
+      friction: 0.3,
       restitution: 0.1,
       damping: { lin: 0.1, ang: 0.1 },
       canSleep: true,
@@ -800,8 +900,8 @@ function main() {
           rotation: [0, 0, 0],
           scale: [10, 10, 10],
           enableShadows: true,
-          shape: 'compound',
-          density: 1.0,
+          shape: 'box',
+          density: 0.5,
           friction: 0.8,
           restitution: 0.1,
           damping: { lin: 0.1, ang: 0.1 },
@@ -812,6 +912,13 @@ function main() {
           lockXZRotation: true
         });
         zombies.push(z);
+        // 给僵尸所有sub mesh打上 owner 标记，便于命中后回溯到僵尸对象
+        if (z.object) {
+          z.object.traverse(o => {
+            if (!o.userData) o.userData = {};
+            o.userData.owner = z;
+          });
+        }
         if (z && z.rigidBody) {
           z.rigidBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
         }
@@ -841,11 +948,13 @@ function main() {
             .setRestitution(0.0),
           z.rigidBody
         );
+        // Zombie belongs to bit 1; filter collides with everything except player (bit 0)
+        ctrl.setCollisionGroups((0x0002 << 16) | (0xFFFF ^ 0x0001));
         z.controllerCollider = ctrl;
         addColliderDebugCapsuleForBody(z.rigidBody, halfHeight, radius, 0x00ff00);
 
         // 每个僵尸独立的角色控制器（避免共享控制器导致状态干扰）
-        z.kcc = world.createCharacterController(1);
+        z.kcc = world.createCharacterController(0.5);
         z.kcc.setUp({ x: 0, y: 1, z: 0 });
         z.kcc.setSlideEnabled(true);
         z.kcc.enableAutostep(0.4, 0.3, false);
@@ -887,7 +996,7 @@ function main() {
   createZombieAt([-237, 20, -41]);
 
   // 在一个中心点周围随机选点生成僵尸
-  async function spawnZombiesAround(center, count = 5, radius = 30) {
+  async function spawnZombiesAround(center, count = 5, radius = 80) {
     const cx = Array.isArray(center) ? center[0] : center.x;
     const cy = Array.isArray(center) ? center[1] : center.y;
     const cz = Array.isArray(center) ? center[2] : center.z;
@@ -904,9 +1013,8 @@ function main() {
   }
 
 
-  // 统一光照初始化（debug=false 不显示 helper）
+  // init lighting and skybox
   initLighting(DEBUG);
-  // 天空盒
   initSkybox();
 
   requestAnimationFrame(render);
@@ -926,11 +1034,83 @@ function resizeRendererToDisplaySize(renderer) {
   return needResize;
 }
 
+function updateCameraAspectOnResize(renderer, camera, fpsCamera) {
+  const canvas = renderer.domElement;
+  const newAspect = canvas.clientWidth / canvas.clientHeight;
+  camera.aspect = newAspect;
+  camera.updateProjectionMatrix();
+  if (fpsCamera) {
+    fpsCamera.aspect = newAspect;
+    fpsCamera.updateProjectionMatrix();
+  }
+}
+
+// 每帧更新 FPS 角色控制与相机同步
+function stepFpsController(dt) {
+  // FPS movement step
+  if (activeControls === fpsControls && fpsControls.isLocked) {
+    // Use a tighter clamp for movement to avoid big jumps on frame drops
+    const moveDt = Math.min(dt, 0.033);
+    const distance = moveSpeed * moveDt;
+    // Ensure movement axes use latest camera orientation (after mouse yaw/pitch)
+    fpsCamera.updateMatrixWorld(true);
+    // Build input vector (forward/back, right/left) in world XZ plane
+    const inputForward = (movement.forward ? 1 : 0) + (movement.backward ? -1 : 0);
+    const inputRight = (movement.right ? 1 : 0) + (movement.left ? -1 : 0);
+    const mag = Math.hypot(inputForward, inputRight);
+    const targetF = mag > 0 ? inputForward / mag : 0;
+    const targetR = mag > 0 ? inputRight / mag : 0;
+    const alpha = 1 - Math.exp(-movementSmoothing * moveDt);
+    smoothedMove.forward += (targetF - smoothedMove.forward) * alpha;
+    smoothedMove.right += (targetR - smoothedMove.right) * alpha;
+    // derive world-space move dir from camera yaw
+    const camDir = new THREE.Vector3();
+    fpsCamera.getWorldDirection(camDir);
+    camDir.y = 0; camDir.normalize();
+    // right direction
+    const rightDir = new THREE.Vector3().crossVectors(camDir, new THREE.Vector3(0, 1, 0)).normalize();
+    const desired = new THREE.Vector3()
+      .addScaledVector(camDir, smoothedMove.forward * distance)
+      .addScaledVector(rightDir, smoothedMove.right * distance);
+    // jump request (use last frame grounded state)
+    if (requestJump && isGrounded) {
+      verticalVelocity = getJumpVelocity();
+      requestJump = false;
+    }
+    // integrate gravity for vertical motion
+    verticalVelocity += gravityAccel * moveDt;
+    if (verticalVelocity < terminalFallSpeed) verticalVelocity = terminalFallSpeed;
+    desired.y = verticalVelocity * moveDt;
+    // character controller collision-aware movement
+
+    // 这里才是真正的移动
+    if (charController && playerBody && playerCollider) {
+      charController.computeColliderMovement(playerCollider, { x: desired.x, y: desired.y, z: desired.z });
+      const delta = charController.computedMovement();
+      const cur = playerBody.translation();
+      playerBody.setNextKinematicTranslation({ x: cur.x + delta.x, y: cur.y + delta.y, z: cur.z + delta.z });
+      // reset vertical velocity when grounded to avoid sinking
+      isGrounded = charController.computedGrounded();
+      if (isGrounded && verticalVelocity < 0) {
+        verticalVelocity = 0;
+      }
+    }
+  }
+
+  // Sync fps camera position to the kinematic body (follow capsule)
+  if (activeCamera === fpsCamera && playerBody) {
+    const p = playerBody.translation();
+    fpsCamera.position.set(p.x, p.y + cameraYOffset, p.z);
+  }
+}
+
 function render(ts) {
+  // start stats, for performance monitoring
+  if (stats) stats.begin();
 
   function updateZombies(dt) {
     if (!(zombies && zombies.length > 0)) return;
-    // 若未按下 T：仅将非死亡的僵尸标记为 idle 并确保播放 idle 动画；死亡保持 dead
+    // mark all alive zombies as idle if not pressing T
     if (!(movement && movement.zombiesForward)) {
       for (const z of zombies) {
         if (!z) continue;
@@ -1035,20 +1215,12 @@ function render(ts) {
     }
   }
 
-  if (stats) stats.begin();
-
+  // resize renderer to display size
   resizeRendererToDisplaySize(renderer);
 
-  {
-    const canvas = renderer.domElement;
-    const newAspect = canvas.clientWidth / canvas.clientHeight;
-    camera.aspect = newAspect;
-    camera.updateProjectionMatrix();
-    if (fpsCamera) {
-      fpsCamera.aspect = newAspect;
-      fpsCamera.updateProjectionMatrix();
-    }
-  }
+  updateCameraAspectOnResize(renderer, camera, fpsCamera);
+
+
   if (activeControls === controls) {
     controls.update();
   }
@@ -1056,55 +1228,8 @@ function render(ts) {
   // Unified delta time for this frame (clamped to avoid spikes)
   const dt = Math.min(clock.getDelta(), 0.1);
 
-  // FPS movement step
-  if (activeControls === fpsControls && fpsControls.isLocked) {
-    // Use a tighter clamp for movement to avoid big jumps on frame drops
-    const moveDt = Math.min(dt, 0.033);
-    const distance = moveSpeed * moveDt;
-    // Ensure movement axes use latest camera orientation (after mouse yaw/pitch)
-    fpsCamera.updateMatrixWorld(true);
-    // Build input vector (forward/back, right/left) in world XZ plane
-    const inputForward = (movement.forward ? 1 : 0) + (movement.backward ? -1 : 0);
-    const inputRight = (movement.right ? 1 : 0) + (movement.left ? -1 : 0);
-    const mag = Math.hypot(inputForward, inputRight);
-    const targetF = mag > 0 ? inputForward / mag : 0;
-    const targetR = mag > 0 ? inputRight / mag : 0;
-    const alpha = 1 - Math.exp(-movementSmoothing * moveDt);
-    smoothedMove.forward += (targetF - smoothedMove.forward) * alpha;
-    smoothedMove.right += (targetR - smoothedMove.right) * alpha;
-    // derive world-space move dir from camera yaw
-    const camDir = new THREE.Vector3();
-    fpsCamera.getWorldDirection(camDir);
-    camDir.y = 0; camDir.normalize();
-    // right direction
-    const rightDir = new THREE.Vector3().crossVectors(camDir, new THREE.Vector3(0, 1, 0)).normalize();
-    const desired = new THREE.Vector3()
-      .addScaledVector(camDir, smoothedMove.forward * distance)
-      .addScaledVector(rightDir, smoothedMove.right * distance);
-    // jump request (use last frame grounded state)
-    if (requestJump && isGrounded) {
-      verticalVelocity = getJumpVelocity();
-      requestJump = false;
-    }
-    // integrate gravity for vertical motion
-    verticalVelocity += gravityAccel * moveDt;
-    if (verticalVelocity < terminalFallSpeed) verticalVelocity = terminalFallSpeed;
-    desired.y = verticalVelocity * moveDt;
-    // character controller collision-aware movement
-
-    // 这里才是真正的移动
-    if (charController && playerBody && playerCollider) {
-      charController.computeColliderMovement(playerCollider, { x: desired.x, y: desired.y, z: desired.z });
-      const delta = charController.computedMovement();
-      const cur = playerBody.translation();
-      playerBody.setNextKinematicTranslation({ x: cur.x + delta.x, y: cur.y + delta.y, z: cur.z + delta.z });
-      // reset vertical velocity when grounded to avoid sinking
-      isGrounded = charController.computedGrounded();
-      if (isGrounded && verticalVelocity < 0) {
-        verticalVelocity = 0;
-      }
-    }
-  }
+  // step fps controller
+  stepFpsController(dt);
 
   // Sync fps camera position to the kinematic body (follow capsule)
   if (activeCamera === fpsCamera && playerBody) {
@@ -1119,11 +1244,10 @@ function render(ts) {
     sunCamHelper.update();
   }
 
+
   renderer.render(scene, activeCamera);
   // 更新动画模块
-  if (mixers && mixers.length > 0) {
-    for (const m of mixers) m.update(dt);
-  }
+  updateMixers(mixers, dt);
 
   // 僵尸移动逻辑
   updateZombies(dt);
@@ -1143,7 +1267,7 @@ function render(ts) {
     posEl.textContent = `Pos: ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}`;
   }
 
-  if (stats) stats.end();
+  
 
   // Track low FPS using RAF timestamp (unclamped dt)
   if (typeof ts === 'number') {
@@ -1161,6 +1285,8 @@ function render(ts) {
   }
 
   requestAnimationFrame(render);
+
+  if (stats) stats.end();
 }
 
 function onWindowResize() {
@@ -1260,7 +1386,7 @@ export function addCompoundBoxCollidersFromMesh(
   rigidBody,
   object3d,
   {
-    density = 1.0,
+    density = undefined,
     friction = 0.7,
     restitution = 0.0
   } = {}
@@ -1298,12 +1424,16 @@ export function addCompoundBoxCollidersFromMesh(
     const hz = Math.max(tmpSizeWorld.z * 0.5, 0.005);
 
     const collider = world.createCollider(
-      RAPIER.ColliderDesc
-        .cuboid(hx, hy, hz)
-        .setTranslation(centerLocal.x, centerLocal.y, centerLocal.z)
-        .setDensity(density)
-        .setFriction(friction)
-        .setRestitution(restitution),
+      (() => {
+        const d = RAPIER.ColliderDesc
+          .cuboid(hx, hy, hz)
+          .setTranslation(centerLocal.x, centerLocal.y, centerLocal.z)
+          .setFriction(friction)
+          .setRestitution(restitution);
+        // Only apply density if provided; otherwise, leave mass contribution to be set explicitly on body
+        if (typeof density !== 'undefined') d.setDensity(density);
+        return d;
+      })(),
       rigidBody
     );
     colliders.push(collider);
@@ -1311,6 +1441,5 @@ export function addCompoundBoxCollidersFromMesh(
 
   return colliders;
 }
-
 
 main();
