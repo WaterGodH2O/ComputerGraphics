@@ -220,10 +220,19 @@ function createDynamicGLTF({
   canSleep = true,
   enableCcd = true,
   rapier = RAPIER,
-  rapierWorld = world
+  rapierWorld = world,
+  renderOffset
 }) {
-  if (!object3d) return { object: null, rigidBody: null, colliders: [] };
 
+    
+  if (!object3d) {
+    console.error('[createDynamicGLTF] object3d is not valid');
+    return { object: null, rigidBody: null, colliders: [] };
+  }
+
+  if(renderOffset === undefined) {
+    renderOffset = { x: 0, y: 0, z: 0 };
+  }
   object3d.position.set(position[0], position[1], position[2]);
   object3d.rotation.set(rotation[0], rotation[1], rotation[2]);
   object3d.scale.set(scale[0], scale[1], scale[2]);
@@ -264,14 +273,47 @@ function createDynamicGLTF({
       body
     );
     colliders.push(collider);
+    // debug collider
+    addColliderDebugBoxForBody(
+      body,
+      new THREE.Vector3(Math.max(size.x * 0.5, 0.01), Math.max(size.y * 0.5, 0.01), Math.max(size.z * 0.5, 0.01)),
+      new THREE.Vector3(0, 0, 0),
+      0x00ffff
+    );
   } else if (shape === 'compound') {
     const created = addCompoundBoxCollidersFromMesh(rapier, rapierWorld, body, object3d, { density, friction, restitution });
     for (const c of created) colliders.push(c);
-  } else if(shape === 'auto'){
-    // 动态三角网（数值昂贵，谨慎使用）
-    const rb = addDynamicTrimeshColliderFromMesh(rapier, rapierWorld, object3d, { density, friction, restitution });
-    // 覆盖为由该函数创建的刚体
-    entryOverrideBody = rb;
+    // debug compound box colliders
+    {
+      object3d.updateWorldMatrix(true, true);
+      const bodyMatrixWorld = object3d.matrixWorld.clone();
+      const bodyMatrixInv = bodyMatrixWorld.clone().invert();
+
+      const tmpBox = new THREE.Box3();
+      const tmpCenterWorld = new THREE.Vector3();
+      const tmpSizeWorld = new THREE.Vector3();
+
+      object3d.traverse((child) => {
+        if (!child.isMesh) return;
+        // world-space AABB of this mesh
+        tmpBox.setFromObject(child);
+        tmpBox.getCenter(tmpCenterWorld);
+        tmpBox.getSize(tmpSizeWorld);
+        // skip tiny boxes
+        if (tmpSizeWorld.x < 0.01 && tmpSizeWorld.y < 0.01 && tmpSizeWorld.z < 0.01) return;
+        // transform to body local
+        const centerLocal = tmpCenterWorld.clone().applyMatrix4(bodyMatrixInv);
+        const hx = Math.max(tmpSizeWorld.x * 0.5, 0.005);
+        const hy = Math.max(tmpSizeWorld.y * 0.5, 0.005);
+        const hz = Math.max(tmpSizeWorld.z * 0.5, 0.005);
+        addColliderDebugBoxForBody(
+          body,
+          new THREE.Vector3(hx, hy, hz),
+          new THREE.Vector3(centerLocal.x, centerLocal.y, centerLocal.z),
+          0x00ffff
+        );
+      });
+    }
   } else {
     const radius = Math.max(size.x, size.y, size.z) * 0.5 || 0.5;
     const collider = rapierWorld.createCollider(
@@ -285,20 +327,23 @@ function createDynamicGLTF({
     colliders.push(collider);
   }
 
+
+
   if (enableCcd && typeof body.enableCcd === 'function') body.enableCcd(true);
 
   // 注册同步（每帧从刚体同步到可视对象）
+
+  function syncFunc() {
+    const t = body.translation();
+    const r = body.rotation();
+    object3d.position.set(t.x + renderOffset.x, t.y + renderOffset.y, t.z + renderOffset.z);
+    object3d.quaternion.set(r.x, r.y, r.z, r.w);
+  }
   const entry = {
     object: object3d,
     rigidBody: (typeof entryOverrideBody !== 'undefined' && entryOverrideBody) ? entryOverrideBody : body,
     colliders,
-    sync: () => {
-      const usingBody = (typeof entryOverrideBody !== 'undefined' && entryOverrideBody) ? entryOverrideBody : body;
-      const t = usingBody.translation();
-      const r = usingBody.rotation();
-      object3d.position.set(t.x, t.y, t.z);
-      object3d.quaternion.set(r.x, r.y, r.z, r.w);
-    }
+    sync: syncFunc
   };
   dynamicGltfObjects.push(entry);
 
@@ -404,7 +449,7 @@ export async function initPhysics(scene) {
           .setRestitution(restitution),
         body
       );
-      if (enableCcd && typeof body.enableCcd === "function") body.enableCcd(true);
+      body.enableCcd(true);
       // debug collider
       addColliderDebugBoxForBody(
         body,
@@ -657,8 +702,8 @@ function main() {
   // 动态 glTF 示例（使用动态工厂）
   const dynLoader = new GLTFLoader();
   dynLoader.load('../GlTF_Models/glTF/Vehicle_Pickup_Armored.gltf', function (gltf) {
-    console.log("pickup armored loaded");
 
+    
     createDynamicGLTF({
       object3d: gltf.scene,
       position: [-441, 20, -22],
@@ -671,7 +716,34 @@ function main() {
       restitution: 0.1,
       damping: { lin: 0.1, ang: 0.1 },
       canSleep: true,
-      enableCcd: true
+      enableCcd: true,
+      renderOffset: { x: 0, y: -9.5, z: 0 }
+    });
+
+  }, undefined, function (error) {
+
+    console.error(error);
+
+  });
+
+
+  dynLoader.load('../GlTF_Models/glTF/Zombie_Basic.gltf', function (gltf) {
+
+    
+    createDynamicGLTF({
+      object3d: gltf.scene,
+      position: [-207, 20, -41],
+      rotation: [0, 0, 0],
+      scale: [10, 10, 10],
+      enableShadows: true,
+      shape: 'compound',            // 或 'sphere'
+      density: 1.0,
+      friction: 0.8,
+      restitution: 0.1,
+      damping: { lin: 0.1, ang: 0.1 },
+      canSleep: true,
+      enableCcd: true,
+      renderOffset: { x: 0, y: -5, z: 0 }
     });
 
   }, undefined, function (error) {
@@ -866,7 +938,10 @@ function createControls(camera) {
 // 将 three.js Object3D（可为 Mesh 或 Group）转换为若干 Rapier Trimesh colliders（固定刚体）
 // 并将rb注册入world，返回一个可以用于销毁等操作的rb句柄
 export function addStaticTrimeshColliderFromMesh(RAPIER, world, object3d) {
-    if (!object3d) return;
+    if (!object3d) {
+      console.error('[addStaticTrimeshColliderFromMesh] object3d is not valid');
+      return;
+    }
     object3d.updateWorldMatrix(true, true);
 
     // create a fixed body to hold multiple colliders for the entire scene
@@ -927,7 +1002,10 @@ export function addCompoundBoxCollidersFromMesh(
   } = {}
 ) {
   const colliders = [];
-  if (!object3d || !rigidBody) return colliders;
+  if (!object3d || !rigidBody) {
+    console.error('[addCompoundBoxCollidersFromMesh] object3d or rigidBody is not valid');
+    return colliders;
+  }
 
   // 刚体的世界矩阵（假设已与 object3d 对齐创建）
   object3d.updateWorldMatrix(true, true);
