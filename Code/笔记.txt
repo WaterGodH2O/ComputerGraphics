@@ -21,3 +21,7 @@ debug:
 （其实小僵尸有离地蛮大的空的 看看要不要修吧
 
 僵尸和玩家都由KCC驱动位移，所以实际上僵尸和玩家无法存在碰撞交互，用力来移动则在高低差的位置需要更复杂的处理，避免僵尸卡住或者摔倒
+
+2把武器 有枪声 枪声来自https://pixabay.com/sound-effects/search/gun/
+
+天空盒来自 https://polyhaven.com/zh/a/citrus_orchard_road_puresky

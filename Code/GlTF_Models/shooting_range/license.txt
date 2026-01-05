@@ -1,0 +1,11 @@
+Model Information:
+* title:	Shooting Range
+* source:	https://sketchfab.com/3d-models/shooting-range-7bd8f1b218664666a6865ff96de28abf
+* author:	Zippy2490 (https://sketchfab.com/Zippy2490)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Shooting Range" (https://sketchfab.com/3d-models/shooting-range-7bd8f1b218664666a6865ff96de28abf) by Zippy2490 (https://sketchfab.com/Zippy2490) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

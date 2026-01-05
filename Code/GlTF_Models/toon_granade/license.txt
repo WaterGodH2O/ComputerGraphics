@@ -1,0 +1,11 @@
+Model Information:
+* title:	Toon_Granade
+* source:	https://sketchfab.com/3d-models/toon-granade-4916b6f78b804bacb39eab3a24e02bd6
+* author:	faroface (https://sketchfab.com/faroface)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Toon_Granade" (https://sketchfab.com/3d-models/toon-granade-4916b6f78b804bacb39eab3a24e02bd6) by faroface (https://sketchfab.com/faroface) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
