@@ -8,15 +8,52 @@ import { GLTFLoader } from '../Common/three.js-r170/examples/jsm/loaders/GLTFLoa
 
 import RAPIER from "../Common/node_modules/@dimforge/rapier3d-compat/rapier.mjs";
 
+import { 
+  createStaticGLTF, 
+  createDynamicGLTF,
+  addStaticTrimeshColliderFromMesh,
+  addCompoundBoxCollidersFromMesh
+} from './modules/GLTFFactory.js';
+
+import { initPhysics } from './modules/Physics.js';
+
+import { 
+  initGranadePool, 
+  getGranadeFromPool, 
+  returnGranadeToPool, 
+  throwGranade,
+  setupGranadeExplosion
+} from './modules/Grenades.js';
+
+import {
+  createZombieAt,
+  spawnZombiesAround,
+  updateZombies,
+  destroyAllZombies
+} from './modules/Zombies.js';
+
 let camera, fpsCamera, controls, fpsControls, scene, renderer, canvas, world, map_city  ;
 let scene2Position = null; // 场景2物体的位置
 let crosshairEl = null; // 十字准星元素
 let mainMenuEl = null; // 主菜单元素
 let isMenuVisible = true; // 菜单是否可见
+let zombieCounterEl = null; // 僵尸计数器元素
+let zombieCountEl = null; // 僵尸数量显示元素
+let winMessageEl = null; // Win消息元素
 let sun, sunHelper, sunCamHelper;
 let stats;
 
 let initMap = false;
+
+// 场景状态枚举
+const SceneState = {
+  MENU: 'menu',           // 主菜单
+  LEVEL1: 'level1',      // Level1场景
+  SHOOTING_RANGE: 'shooting_range'  // 射击场场景
+};
+
+// 当前场景状态
+let currentSceneState = SceneState.MENU;
 // 手电筒
 let flashlight = null;
 let flashlightEnabled = false;
@@ -39,9 +76,7 @@ let rifleRecoil = 0;
 let rifleShake = 0;
 // 全局：手雷操作句柄
 let granade = null;
-// 手雷对象池
-const granadePool = [];
-const GRANADE_POOL_SIZE = 10;
+// 手雷对象池已移至 modules/Grenades.js
 // 武器音效
 let pistolSound = null;
 let rifleSound = null;
@@ -66,7 +101,11 @@ const clock = new THREE.Clock();
 let mixer = null;
 
 scene = new THREE.Scene();
-const physics = await initPhysics(scene);
+const physics = await initPhysics({
+  scene: scene,
+  RAPIER: RAPIER,
+  addColliderDebugBox: addColliderDebugBoxForBody
+});
 // expose rapier world for custom colliders
 world = physics.world;
 
@@ -248,248 +287,7 @@ function updateColliderDebugs() {
   }
 }
 
-// glTF 静态场景工厂：应用变换、可选阴影、可选静态三角网碰撞体
-function createStaticGLTF({
-  object3d,
-  position = [0, 20, 0],
-  rotation = [0, 0, 0],
-  scale = [1, 1, 1],
-  enableShadows = true,
-  addCollider = true,
-  rapier = RAPIER,
-  rapierWorld = world
-}) {
-  object3d.position.set(position[0], position[1], position[2]);
-  object3d.rotation.set(rotation[0], rotation[1], rotation[2]);
-  object3d.scale.set(scale[0], scale[1], scale[2]);
 
-  if (enableShadows) {
-    object3d.traverse((obj) => {
-      if (obj.isMesh) {
-        obj.castShadow = true;
-        obj.receiveShadow = true;
-      }
-    });
-  }
-
-  scene.add(object3d);
-
-  let rb = null;
-  if (addCollider && rapierWorld) {
-    rb = addStaticTrimeshColliderFromMesh(rapier, rapierWorld, object3d);
-  }
-
-  return { object: object3d, rigidBody: rb };
-}
-
-// glTF 动态对象工厂：根据包围盒生成球/盒近似碰撞体，创建动态刚体并注册同步
-// 渲染位置已经同步于刚体运动 step时会遍历dynamicGltfObjects列表，取出其中每个元素的sync同步位置
-function createDynamicGLTF({
-  object3d,
-  position = [0, 0, 0],
-  rotation = [0, 0, 0],
-  scale = [1, 1, 1],
-  // Additional multiplier for physics collider size (does not affect visuals)
-  colliderScale = [1, 1, 1],
-  enableShadows = true,
-  shape = 'sphere', // 'sphere' | 'box' | 'compound' | 'No'
-  // Preferred: explicitly set total mass for this rigid body; overrides density if provided
-  targetMass = undefined,
-  // Fallback density when targetMass is not provided
-  density = 0.05,
-  // Lower default friction to make objects easier to push
-  friction = 0.3,
-  restitution = 0.0,
-  damping = { lin: 0.05, ang: 0.05 },
-  canSleep = true,
-  enableCcd = true,
-  // 保持直立：禁止绕 X/Z 旋转，只允许绕 Y 旋转
-  lockXZRotation = false,
-  rapier = RAPIER,
-  rapierWorld = world,
-  renderOffset
-}) {
-
-    
-  if (!object3d) {
-    console.error('[createDynamicGLTF] object3d is not valid');
-    return { object: null, rigidBody: null, colliders: [] };
-  }
-
-  if(renderOffset === undefined) {
-    renderOffset = { x: 0, y: 0, z: 0 };
-  }
-  object3d.position.set(position[0], position[1], position[2]);
-  object3d.rotation.set(rotation[0], rotation[1], rotation[2]);
-  object3d.scale.set(scale[0], scale[1], scale[2]);
-
-  if (enableShadows) {
-    object3d.traverse((obj) => {
-      if (obj.isMesh) {
-        obj.castShadow = true;
-        obj.receiveShadow = true;
-      }
-    });
-  }
-
-  scene.add(object3d);
-
-  // 计算包围盒尺寸（世界空间）
-  const bbox = new THREE.Box3().setFromObject(object3d);
-  const size = new THREE.Vector3();
-  bbox.getSize(size);
-
-  // shape === 'No' 表示不创建任何刚体/碰撞体，仅作为纯渲染对象
-  if (shape === 'No') {
-    const entry = {
-      object: object3d,
-      rigidBody: null,
-      colliders: [],
-      sync: null
-    };
-    dynamicGltfObjects.push(entry);
-    return entry;
-  }
-
-  // 创建动态刚体
-  const desc = rapier.RigidBodyDesc.dynamic()
-    .setTranslation(position[0], position[1], position[2])
-    .setCanSleep(canSleep)
-    .setLinearDamping(damping.lin)
-    .setAngularDamping(damping.ang);
-  const body = rapierWorld.createRigidBody(desc);
-
-  // 碰撞体：默认球体更稳定；可选盒体/复合盒
-  const colliders = [];
-  if (shape === 'box') {
-    const sx = Math.max(colliderScale[0] ?? 1, 0.0001);
-    const sy = Math.max(colliderScale[1] ?? 1, 0.0001);
-    const sz = Math.max(colliderScale[2] ?? 1, 0.0001);
-    const hx = Math.max(size.x * 0.5 * sx, 0.01);
-    const hy = Math.max(size.y * 0.5 * sy, 0.01);
-    const hz = Math.max(size.z * 0.5 * sz, 0.01);
-    {
-      const desc = rapier.ColliderDesc
-        .cuboid(hx, hy, hz)
-        .setFriction(friction)
-        .setRestitution(restitution);
-      // Only add density-based mass when no explicit targetMass is given
-      if (typeof targetMass === 'undefined') desc.setDensity(density);
-      const collider = rapierWorld.createCollider(desc, body);
-      colliders.push(collider);
-    }
-    // debug collider
-    addColliderDebugBoxForBody(
-      body,
-      new THREE.Vector3(hx, hy, hz),
-      new THREE.Vector3(0, 0, 0),
-      0x00ffff
-    );
-    
-  } else if (shape === 'compound') {
-    // When targetMass is provided, skip per-collider density so total mass can be set explicitly.
-    const created = addCompoundBoxCollidersFromMesh(
-      rapier,
-      rapierWorld,
-      body,
-      object3d,
-      { density: (typeof targetMass === 'undefined') ? density : undefined, friction, restitution }
-    );
-    for (const c of created) colliders.push(c);
-    // debug compound box colliders
-    {
-      object3d.updateWorldMatrix(true, true);
-      const bodyMatrixWorld = object3d.matrixWorld.clone();
-      const bodyMatrixInv = bodyMatrixWorld.clone().invert();
-
-      const tmpBox = new THREE.Box3();
-      const tmpCenterWorld = new THREE.Vector3();
-      const tmpSizeWorld = new THREE.Vector3();
-
-      object3d.traverse((child) => {
-        if (!child.isMesh) return;
-        // world-space AABB of this mesh
-        tmpBox.setFromObject(child);
-        tmpBox.getCenter(tmpCenterWorld);
-        tmpBox.getSize(tmpSizeWorld);
-        // skip tiny boxes
-        if (tmpSizeWorld.x < 0.01 && tmpSizeWorld.y < 0.01 && tmpSizeWorld.z < 0.01) return;
-        // transform to body local
-        const centerLocal = tmpCenterWorld.clone().applyMatrix4(bodyMatrixInv);
-        const sx = Math.max(colliderScale[0] ?? 1, 0.0001);
-        const sy = Math.max(colliderScale[1] ?? 1, 0.0001);
-        const sz = Math.max(colliderScale[2] ?? 1, 0.0001);
-        const hx = Math.max(tmpSizeWorld.x * 0.5 * sx, 0.005);
-        const hy = Math.max(tmpSizeWorld.y * 0.5 * sy, 0.005);
-        const hz = Math.max(tmpSizeWorld.z * 0.5 * sz, 0.005);
-        addColliderDebugBoxForBody(
-          body,
-          new THREE.Vector3(hx, hy, hz),
-          new THREE.Vector3(centerLocal.x, centerLocal.y, centerLocal.z),
-          0x00ffff
-        );
-      });
-    }
-  } else {
-    const scl = Math.max(colliderScale[0] ?? 1, colliderScale[1] ?? 1, colliderScale[2] ?? 1);
-    const radius = (Math.max(size.x, size.y, size.z) * 0.5 || 0.5) * Math.max(scl, 0.0001);
-    {
-      const desc = rapier.ColliderDesc
-        .ball(radius)
-        .setFriction(friction)
-        .setRestitution(restitution);
-      // Only add density-based mass when no explicit targetMass is given
-      if (typeof targetMass === 'undefined') desc.setDensity(density);
-      const collider = rapierWorld.createCollider(desc, body);
-      colliders.push(collider);
-    }
-
-    addColliderDebugCapsuleForBody(
-        body,
-        radius,
-        radius,
-        new THREE.Vector3(0, 0, 0),
-        0x00ffff
-      );
-  }
-
-  // If explicit target mass is requested, set it on the rigid body (overrides collider-based mass)
-  if (typeof targetMass === 'number' && isFinite(targetMass) && targetMass > 0 && typeof body.setAdditionalMass === 'function') {
-    body.setAdditionalMass(targetMass, true);
-  }
-
-
-  if (enableCcd) body.enableCcd(true);
-  // 锁定 X/Z 旋转以防跌倒，并增加角阻尼帮助稳定
-  if (lockXZRotation) {
-    // body.setEnabledRotations(false, true, false, true);
-    // const angDamp = Math.max(damping.ang ?? 0.05, 2.0);
-
-    // const angDamp = 1.0;
-    // body.setAngularDamping(angDamp);
-  }
-
-  // 注册同步（每帧从刚体同步到可视对象）
-  
-  function syncFunc() {
-    const t = body.translation();
-    const r = body.rotation();
-    const q = new THREE.Quaternion(r.x, r.y, r.z, r.w);
-    // calculate offset in world space, instead of local space
-    const offsetWorld = new THREE.Vector3(renderOffset.x, renderOffset.y, renderOffset.z).applyQuaternion(q);
-    object3d.position.set(t.x + offsetWorld.x, t.y + offsetWorld.y, t.z + offsetWorld.z);
-    object3d.quaternion.copy(q);
-  }
-  const entry = {
-    object: object3d,
-    rigidBody: (typeof entryOverrideBody !== 'undefined' && entryOverrideBody) ? entryOverrideBody : body,
-    colliders,
-    sync: syncFunc
-  };
-  dynamicGltfObjects.push(entry);
-
-  return entry;
-}
 
 // FPS movement state
 const movement = {
@@ -515,164 +313,7 @@ let isGrounded = false;                 // updated after controller move each fr
 const jumpHeight = 10;                  // desired apex height in scene units
 const getJumpVelocity = () => Math.sqrt(2 * (-gravityAccel) * jumpHeight);
 
-/**
- * 初始化 Rapier 世界 + 常见刚体（地面/盒子）并返回一个 step(dt) 用于每帧推进
- * @param {THREE.Scene} scene
- */
-export async function initPhysics(scene) {
-    // 1) 初始化 WASM（必须 await）
-    await RAPIER.init();
-  
-    // 2) 创建物理世界（重力向下）
-    const world = new RAPIER.World({ x: 0, y: -9.81*14, z: 0 });
-  
-    // ---- 通用材质参数（你可以按需调整）----
-    const groundFriction = 1.0;
-    const groundRestitution = 0.0;
-    const boxFriction = 0.7;
-    const boxRestitution = 0.5;
 
-    // 对象注册列表与辅助工厂
-    const physicsObjects = [];
-
-    // 接受一个entry，把其中的mesh添加到世界
-    function addPhysicsObject(entry) {
-      physicsObjects.push(entry);
-      if (entry.mesh) scene.add(entry.mesh);
-      return entry;
-    }
-    function makeBoxMesh(sizeX, sizeY, sizeZ, material) {
-      const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(sizeX, sizeY, sizeZ),
-        material || new THREE.MeshStandardMaterial()
-      );
-      return mesh;
-    }
-    function createFixedCuboid({ halfExtents, position, friction, restitution, meshSize, meshPosition, material }) {
-      const body = world.createRigidBody(
-        RAPIER.RigidBodyDesc.fixed().setTranslation(position[0], position[1], position[2])
-      );
-      const collider = world.createCollider(
-        RAPIER.ColliderDesc.cuboid(halfExtents[0], halfExtents[1], halfExtents[2])
-          .setFriction(friction ?? 0.8)
-          .setRestitution(restitution ?? 0.0),
-        body
-      );
-      // debug collider
-      addColliderDebugBoxForBody(
-        { translation: () => ({ x: position[0], y: position[1], z: position[2] }), rotation: () => ({ x: 0, y: 0, z: 0, w: 1 }) },
-        new THREE.Vector3(halfExtents[0], halfExtents[1], halfExtents[2]),
-        new THREE.Vector3(0, 0, 0),
-        0x00ffff
-      );
-      const mesh = makeBoxMesh(meshSize[0], meshSize[1], meshSize[2], material);
-      mesh.position.set(meshPosition[0], meshPosition[1], meshPosition[2]);
-      mesh.receiveShadow = true;
-
-      return addPhysicsObject({
-        body: body,
-        colliders: [collider],
-        mesh: mesh,
-        sync: null // 静态对象无需每帧同步
-      });
-    }
-
-    function createDynamicBox({ halfExtents, position, damping = { lin: 0.05, ang: 0.05 }, density = 1.0, friction = 0.7, 
-        restitution = 0.0, canSleep = true, enableCcd = true, material }) {
-      const desc = RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(position[0], position[1], position[2])
-        .setCanSleep(canSleep)
-        .setLinearDamping(damping.lin)
-        .setAngularDamping(damping.ang);
-
-      const body = world.createRigidBody(desc);
-      const collider = world.createCollider(
-        RAPIER.ColliderDesc.cuboid(halfExtents[0], halfExtents[1], halfExtents[2])
-          .setDensity(density)
-          .setFriction(friction)
-          .setRestitution(restitution),
-        body
-      );
-      body.enableCcd(true);
-      // debug collider
-      addColliderDebugBoxForBody(
-        body,
-        new THREE.Vector3(halfExtents[0], halfExtents[1], halfExtents[2]),
-        new THREE.Vector3(0, 0, 0),
-        0x00ffff
-      );
-      const mesh = makeBoxMesh(halfExtents[0] * 2, halfExtents[1] * 2, halfExtents[2] * 2, material || new THREE.MeshStandardMaterial({ color: 0xff3333 }));
-      mesh.castShadow = true;
-      const entry = addPhysicsObject({
-        body:body,
-        colliders: [collider],
-        mesh:mesh,
-        sync: () => {
-          const t = body.translation();
-          const r = body.rotation();
-          mesh.position.set(t.x, t.y, t.z);
-          mesh.quaternion.set(r.x, r.y, r.z, r.w);
-        }
-      });
-      return entry;
-    }
-
-    // 使用工厂与注册表创建物体
-    createFixedCuboid({
-      halfExtents: [20, 0.5, 20],
-      position: [0, -0.5, 0],
-      friction: groundFriction,
-      restitution: groundRestitution,
-      meshSize: [40, 1, 40],
-      meshPosition: [0, -0.5, 0]
-    });
-
-    createDynamicBox({
-      halfExtents: [3, 3, 5],
-      position: [0, 4, 0],
-      density: 1.0,
-      friction: boxFriction,
-      restitution: boxRestitution,
-      damping: { lin: 0.05, ang: 0.05 },
-      canSleep: true,
-      enableCcd: true
-    });
-  
-    // 5) 固定步长推进：更稳定（推荐）
-    const fixedDt = 1 / 60;
-    let accumulator = 0;
-  
-    /**
-     * 每帧调用一次：传入真实 dt（秒）
-     * @param {number} dtSec
-     */
-    function step(dtSec) {
-      // 防止 tab 切换回来 dt 巨大导致“爆炸”
-      const dt = Math.min(dtSec, 0.1);
-      accumulator += dt;
-  
-      // 可选：限制每帧最多做多少次 substep，避免卡顿
-      const maxSubSteps = 5;
-      let n = 0;
-  
-      while (accumulator >= fixedDt && n < maxSubSteps) {
-        world.step();
-        accumulator -= fixedDt;
-        n += 1;
-      }
-  
-      // 同步注册对象：刚体 -> Mesh
-      for (const obj of physicsObjects) {
-        if (obj.sync) obj.sync();
-      }
-    }
-  
-    return {
-      world,
-      objects: physicsObjects,
-      step
-    };
-  }
   
   /* 
   
@@ -707,7 +348,7 @@ function main() {
 
   // Create FPS camera + controls
   fpsCamera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-  fpsCamera.position.set(-1700, 12, 800);
+  // 不在这里设置fpsCamera位置，位置设置全部通过按键回调完成
   fpsCamera.rotation.order = 'YXZ';
   fpsControls = new PointerLockControls(fpsCamera, renderer.domElement);
   fpsControls.pointerSpeed = 0.8;
@@ -730,9 +371,10 @@ function main() {
 
   // Create kinematic capsule for FPS character and controller
   {
-    const start = fpsCamera.position;
+    // 使用默认初始位置，不依赖fpsCamera位置
+    const defaultStartPos = { x: -1700, y: 12 - cameraYOffset, z: 800 };
     playerBody = world.createRigidBody(
-      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(start.x, start.y - cameraYOffset, start.z)
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(defaultStartPos.x, defaultStartPos.y, defaultStartPos.z)
     );
     playerCollider = world.createCollider(
       RAPIER.ColliderDesc.capsule(capsule.halfHeight, capsule.radius)
@@ -764,6 +406,11 @@ function main() {
 
   // get the crosshair element
   crosshairEl = document.getElementById('crosshair');
+  
+  // get the zombie counter elements
+  zombieCounterEl = document.getElementById('zombie-counter');
+  zombieCountEl = document.getElementById('zombie-count');
+  winMessageEl = document.getElementById('win-message');
 
   // Set active camera/controls default to FPS
   activeCamera = fpsCamera;
@@ -869,7 +516,23 @@ function main() {
         
         const p = fpsCamera.position;
         c = [p.x, p.y, p.z];
-        if (c) spawnZombiesAround(c, 5, 30);
+        if (c) {
+          spawnZombiesAround({
+            center: c,
+            count: 5,
+            radius: 30,
+            createOptions: {
+              scene: scene,
+              RAPIER: RAPIER,
+              world: world,
+              zombies: zombies,
+              zombieMixers: zombieMixers,
+              mixers: mixers,
+              dynamicGltfObjects: dynamicGltfObjects,
+              addColliderDebugCapsule: addColliderDebugCapsuleForBody
+            }
+          });
+        }
         break;
       }
       case 'Space':
@@ -969,103 +632,33 @@ function main() {
       fpsCamera.getWorldDirection(throwDirection);
       
       // 投掷手雷，并在创建后设置6秒销毁定时器
-      throwGranade(throwPosition, throwDirection, 200, function(granadeInstance) {
-        // 6秒后销毁手雷并创建红色球体
-        granadeInstance.timeoutId = setTimeout(function() {
-          if (!granadeInstance || !granadeInstance.object) return;
-          
-          // 获取手雷当前位置
-          let explosionPosition;
-          if (granadeInstance.rigidBody) {
-            const pos = granadeInstance.rigidBody.translation();
-            explosionPosition = new THREE.Vector3(pos.x, pos.y, pos.z);
-          } else if (granadeInstance.object) {
-            explosionPosition = granadeInstance.object.position.clone();
-          } else {
-            return;
-          }
-          
-          // 创建红色球体
-          const sphereGeometry = new THREE.SphereGeometry(1, 32, 32);
-          const sphereMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-          const redSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-          redSphere.position.copy(explosionPosition);
-          redSphere.castShadow = true;
-          redSphere.receiveShadow = true;
-          scene.add(redSphere);
-          
-          // deal damage to zombies within explosion radius
-          const explosionRadius = 80;
-          let damagedZombies = 0;
-          for (const z of zombies) {
-            if (!z || !z.rigidBody ) continue;
-            // 跳过已死亡的僵尸
-            if (z.health <= 0) continue;
-            
-            // 获取僵尸位置
-            let zombiePosition;
-            if (z.rigidBody) {
-              const pos = z.rigidBody.translation();
-              zombiePosition = new THREE.Vector3(pos.x, pos.y, pos.z);
-            } else if (z.object) {
-              zombiePosition = z.object.position.clone();
-            } else {
-              continue;
+      throwGranade({
+        position: throwPosition,
+        direction: throwDirection,
+        speed: 200,
+        scene: scene,
+        onCreated: function(granadeInstance) {
+          // 播放爆炸声的回调
+          const playExplosionSound = () => {
+            if (!explosionSound) {
+              explosionSound = new Audio('../Sounds/explosion.mp3');
             }
-            
-            // 计算距离
-            const distance = explosionPosition.distanceTo(zombiePosition);
-            
-            // 如果在爆炸范围内，造成伤害
-            if (distance <= explosionRadius) {
-              z.health = Math.max(0, z.health - 100);
-              damagedZombies++;
-              
-              // 如果血量归零，设置状态为死亡
-              if (z.health <= 0) {
-                z.state = 'dead';
-              }
-            }
-          }
-          if (damagedZombies > 0) {
-            console.log('Explosion damaged', damagedZombies, 'zombies within radius', explosionRadius);
-          }
+            explosionSound.currentTime = 0;
+            explosionSound.play().catch(err => console.error('Failed to play explosion sound:', err));
+          };
           
-          
-          // 播放爆炸声
-          if (!explosionSound) {
-            explosionSound = new Audio('../Sounds/explosion.mp3');
-          }
-          explosionSound.currentTime = 0; // 重置到开头
-          explosionSound.play().catch(err => console.error('Failed to play explosion sound:', err));
-          
-          // 停止闪烁效果并恢复材质
-          if (granadeInstance.flashInterval) {
-            clearInterval(granadeInstance.flashInterval);
-            granadeInstance.flashInterval = null;
-          }
-          if (granadeInstance.originalMaterials) {
-            granadeInstance.originalMaterials.forEach(item => {
-              item.material.emissive.copy(item.originalEmissive);
-              item.material.emissiveIntensity = item.originalEmissiveIntensity;
-            });
-            granadeInstance.originalMaterials = null;
-          }
-          
-          // 移除手雷上的红色光源
-          if (granadeInstance.redLight) {
-            scene.remove(granadeInstance.redLight);
-            if (granadeInstance.redLight.dispose) {
-              granadeInstance.redLight.dispose();
-            }
-            granadeInstance.redLight = null;
-          }
-          
-          // 将手雷移回不可见区域（回收）
-          returnGranadeToPool(granadeInstance);
-          
-          console.log('Granade exploded at position:', explosionPosition, 'and left a red sphere');
-        }, 6000); // 6秒 = 6000毫秒
+          // 设置爆炸定时器
+          granadeInstance.timeoutId = setupGranadeExplosion({
+            granadeInstance: granadeInstance,
+            scene: scene,
+            zombies: zombies,
+            explosionRadius: 80,
+            damage: 100,
+            delay: 6000,
+            hiddenPosition: HIDDEN_WEAPON_POSITION,
+            onExplode: playExplosionSound
+          });
+        }
       });
       
       console.log('weapon3: Granade thrown from camera position', throwPosition, 'direction:', throwDirection);
@@ -1132,122 +725,7 @@ function main() {
   }
   window.addEventListener('mousedown', onMouseDown);
 
-  // createZombieAt 
-  async function createZombieAt(position) {
-    return new Promise((resolve) => {
-      const dynLoader = new GLTFLoader();
-      dynLoader.load('../GlTF_Models/glTF/Zombie_Basic.gltf', function (gltf) {
-        const z = createDynamicGLTF({
-          object3d: gltf.scene,
-          position: position,
-          rotation: [0, 0, 0],
-          scale: [10, 10, 10],
-          enableShadows: true,
-          shape: 'box',
-          density: 0.5,
-          friction: 0.8,
-          restitution: 0.1,
-          damping: { lin: 0.1, ang: 0.1 },
-          canSleep: true,
-          enableCcd: true,
-          renderOffset: { x: 0, y: -8, z: 0 },
-          colliderScale: [0.5, 1.1, 0.8],
-          lockXZRotation: true
-        });
-        zombies.push(z);
-        // 给僵尸所有sub mesh打上 owner 标记，便于命中后回溯到僵尸对象
-        if (z.object) {
-          z.object.traverse(o => {
-            if (!o.userData) o.userData = {};
-            o.userData.owner = z;
-          });
-        }
-        if (z && z.rigidBody) {
-          z.rigidBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
-        }
-        z.vy = 0;
-        // 僵尸状态：'idle' | 'moving' | 'dead'
-        z.state = 'idle';
-        // 生命值（为 0 时置为 'dead' 并停止移动）
-        z.health = 100;
-        // 禁用原模型复合盒与地面的实体碰撞，避免与控制器胶囊互相干扰（保留渲染/同步）
-        // 真的应该这么做吗？。。。。先mark一下 不太确定
-
-        for (const c of z.colliders) {
-        c.setSensor(true);
-        }
-
-
-    // 角色控制用胶囊
-        const bbox = new THREE.Box3().setFromObject(z.object);
-        const size = new THREE.Vector3();
-        bbox.getSize(size);
-        const minRadius = 0.2;
-        const radius = Math.max(minRadius, Math.min(size.x, size.z) * 0.35);
-        const halfHeight = Math.max(0.1, (size.y * 0.5) - radius) + 3;
-        const ctrl = world.createCollider(
-          RAPIER.ColliderDesc.capsule(halfHeight, radius)
-            .setFriction(0.0)
-            .setRestitution(0.0),
-          z.rigidBody
-        );
-        // Zombie belongs to bit 1; filter collides with everything except player (bit 0)
-        ctrl.setCollisionGroups((0x0002 << 16) | (0xFFFF ^ 0x0001));
-        z.controllerCollider = ctrl;
-        addColliderDebugCapsuleForBody(z.rigidBody, halfHeight, radius, 0x00ff00);
-
-        // character controller for every single zombie
-        z.kcc = world.createCharacterController(0.5);
-        z.kcc.setUp({ x: 0, y: 1, z: 0 });
-        z.kcc.setSlideEnabled(true);
-        z.kcc.enableAutostep(0.4, 0.3, false);
-        z.kcc.setMaxSlopeClimbAngle(Math.PI * 0.5);
-        z.kcc.setMinSlopeSlideAngle(Math.PI * 0.9);
-        z.kcc.enableSnapToGround(0.3);
-        z.kcc.setApplyImpulsesToDynamicBodies(true);
-        z.kcc.setCharacterMass(200);
-
-        // 动画
-        const zm = new THREE.AnimationMixer(gltf.scene);
-        zombieMixers.push(zm);
-        mixers.push(zm);
-        // 记录到僵尸对象上，便于按状态切换动画
-        z.mixer = zm;
-        z.animations = gltf.animations;
-        z.currentAction = null;
-        z.currentAnimIndex = null;
-        // 初始状态为 idle，则播放索引 3 的动画（若存在）
-
-        const act = zm.clipAction(gltf.animations[3]);
-        act.reset().setLoop(THREE.LoopRepeat).play();
-        z.currentAction = act;
-        z.currentAnimIndex = 3;
-
-
-        resolve(z);
-      }, undefined, function (error) {
-        console.error(error);
-        resolve(null);
-      });
-    });
-  }
-
-  // spawn zombies around a center point
-  async function spawnZombiesAround(center, count = 5, radius = 80) {
-    const cx = Array.isArray(center) ? center[0] : center.x;
-    const cy = Array.isArray(center) ? center[1] : center.y;
-    const cz = Array.isArray(center) ? center[2] : center.z;
-    const tasks = [];
-    for (let i = 0; i < count; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const dist = Math.sqrt(Math.random()) * radius;
-      const x = cx + Math.cos(ang) * dist;
-      const z = cz + Math.sin(ang) * dist;
-      const y = cy;
-      tasks.push(createZombieAt([x, y, z]));
-    }
-    return Promise.all(tasks);
-  }
+  // 僵尸系统函数已移至 modules/Zombies.js
 
   // 创建场景1的所有对象
   function createScene1() {
@@ -1263,7 +741,10 @@ function main() {
         scale: [0.09, 0.09, 0.09],
         rotation: [0, Math.PI * (1 / 4), 0],
         enableShadows: true,
-        addCollider: true
+        addCollider: true,
+        rapier: RAPIER,
+        rapierWorld: world,
+        scene: scene
       });
 
       if (gltf.animations && gltf.animations.length > 0) {
@@ -1297,7 +778,13 @@ function main() {
         damping: { lin: 0.1, ang: 0.1 },
         canSleep: true,
         enableCcd: true,
-        renderOffset: { x: 0, y: -9.5, z: 0 }
+        renderOffset: { x: 0, y: -9.5, z: 0 },
+        rapier: RAPIER,
+        rapierWorld: world,
+        scene: scene,
+        dynamicGltfObjects: dynamicGltfObjects,
+        addColliderDebugBox: addColliderDebugBoxForBody,
+        addColliderDebugCapsule: addColliderDebugCapsuleForBody
       });
 
     }, undefined, function (error) {
@@ -1321,7 +808,13 @@ function main() {
         damping: { lin: 0.1, ang: 0.1 },
         canSleep: true,
         enableCcd: true,
-        renderOffset: { x: 0, y: -9.5, z: 0 }
+        renderOffset: { x: 0, y: -9.5, z: 0 },
+        rapier: RAPIER,
+        rapierWorld: world,
+        scene: scene,
+        dynamicGltfObjects: dynamicGltfObjects,
+        addColliderDebugBox: addColliderDebugBoxForBody,
+        addColliderDebugCapsule: addColliderDebugCapsuleForBody
       });
       // 如果当前不是武器1，则隐藏手枪
       if (playerHeld !== 1 && pistol && pistol.object) {
@@ -1349,7 +842,13 @@ function main() {
         damping: { lin: 0.1, ang: 0.1 },
         canSleep: true,
         enableCcd: true,
-        renderOffset: { x: 0, y: -9.5, z: 0 }
+        renderOffset: { x: 0, y: -9.5, z: 0 },
+        rapier: RAPIER,
+        rapierWorld: world,
+        scene: scene,
+        dynamicGltfObjects: dynamicGltfObjects,
+        addColliderDebugBox: addColliderDebugBoxForBody,
+        addColliderDebugCapsule: addColliderDebugCapsuleForBody
       });
       // 如果当前不是武器2，则隐藏步枪
       if (playerHeld !== 2 && rifle && rifle.object) {
@@ -1363,40 +862,15 @@ function main() {
     });
 
     // initialize granade pool
-    function initGranadePool() {
-      const dynLoader = new GLTFLoader();
-      dynLoader.load('../GlTF_Models/toon_granade/scene.gltf', function (gltf) {
-
-        for (let i = 0; i < GRANADE_POOL_SIZE; i++) {
-          const granadeInstance = createDynamicGLTF({
-            object3d: gltf.scene.clone(), // 克隆场景以避免共享
-            position: [HIDDEN_WEAPON_POSITION.x, HIDDEN_WEAPON_POSITION.y, HIDDEN_WEAPON_POSITION.z],
-            rotation: [0, 0, 0],
-            scale: [1.8, 1.8, 1.8],
-            enableShadows: true,
-            shape: 'sphere',
-            targetMass: 200,
-            friction: 0.3,
-            restitution: 0.4,
-            damping: { lin: 0.1, ang: 0.1 },
-            canSleep: true,
-            enableCcd: true,
-            renderOffset: { x: 0, y: -1, z: 0 }
-          });
-          
-          // 标记为可用
-          granadeInstance.isAvailable = true;
-          granadeInstance.timeoutId = null;
-          granadePool.push(granadeInstance);
-        }
-        console.log('Granade pool initialized with', GRANADE_POOL_SIZE, 'granades');
-      }, undefined, function (error) {
-        console.error('Failed to load granade model for pool:', error);
-      });
-    }
-    
-
-    initGranadePool();
+    initGranadePool({
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      dynamicGltfObjects: dynamicGltfObjects,
+      hiddenPosition: HIDDEN_WEAPON_POSITION,
+      addColliderDebugBox: addColliderDebugBoxForBody,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    });
 
     dynLoader.load('../GlTF_Models/toon_granade/scene.gltf', function (gltf) {
       granade = createDynamicGLTF({
@@ -1413,7 +887,13 @@ function main() {
         damping: { lin: 0.1, ang: 0.1 },
         canSleep: true,
         enableCcd: true,
-        renderOffset: { x: 0, y: -1, z: 0 }
+        renderOffset: { x: 0, y: -1, z: 0 },
+        rapier: RAPIER,
+        rapierWorld: world,
+        scene: scene,
+        dynamicGltfObjects: dynamicGltfObjects,
+        addColliderDebugBox: addColliderDebugBoxForBody,
+        addColliderDebugCapsule: addColliderDebugCapsuleForBody
       });
       // hide granade if not weapon 3
       // if (playerHeld !== 3 && granade && granade.object) {
@@ -1428,10 +908,50 @@ function main() {
 
 
 
-    createZombieAt([-207, 20, -41]);
-    createZombieAt([-217, 20, -21]);
-    createZombieAt([-208, 30, -41]);
-    createZombieAt([-237, 20, -41]);
+    createZombieAt({
+      position: [-207, 20, -41],
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    });
+    createZombieAt({
+      position: [-217, 20, -21],
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    });
+    createZombieAt({
+      position: [-208, 30, -41],
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    });
+    createZombieAt({
+      position: [-237, 20, -41],
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    });
 
     // car lights
     const pointLightAtPosition = new THREE.PointLight(0xffffaa, 400, 100);
@@ -1464,7 +984,10 @@ function main() {
         scale: [4, 4, 4],
         rotation: [0, 0, 0],
         enableShadows: true,
-        addCollider: true
+        addCollider: true,
+        rapier: RAPIER,
+        rapierWorld: world,
+        scene: scene
       });
 
       if (gltf.animations && gltf.animations.length > 0) {
@@ -1476,6 +999,14 @@ function main() {
       
       // 可以保存刚体引用，如果需要后续操作
       // map_scene2 = rigidBody;
+      
+      // 如果当前场景状态是SHOOTING_RANGE，自动移动相机到shooting range位置
+      if (currentSceneState === SceneState.SHOOTING_RANGE && fpsCamera && playerBody) {
+        // 使用setTimeout确保所有初始化完成
+        setTimeout(() => {
+          moveFpsCameraToShootingRange();
+        }, 100);
+      }
 
     }, undefined, function (error) {
 
@@ -1484,156 +1015,7 @@ function main() {
     });
   }
 
-  // get a available granade from pool
-  function getGranadeFromPool() {
-    for (let i = 0; i < granadePool.length; i++) {
-      if (granadePool[i].isAvailable) {
-        return granadePool[i];
-      }
-    }
-    return null; // pool is used up
-  }
-  
-  // return granade to pool
-  function returnGranadeToPool(granadeInstance) {
-    if (!granadeInstance) return;
-    
-    // clear previous timer
-    if (granadeInstance.timeoutId) {
-      clearTimeout(granadeInstance.timeoutId);
-      granadeInstance.timeoutId = null;
-    }
-    
-    // stop lighting
-    if (granadeInstance.flashInterval) {
-      clearInterval(granadeInstance.flashInterval);
-      granadeInstance.flashInterval = null;
-    }
-    if (granadeInstance.originalMaterials) {
-      granadeInstance.originalMaterials.forEach(item => {
-        item.material.emissive.copy(item.originalEmissive);
-        item.material.emissiveIntensity = item.originalEmissiveIntensity;
-      });
-      granadeInstance.originalMaterials = null;
-    }
-    
-    // 移除手雷上的红色光源
-    if (granadeInstance.redLight) {
-      scene.remove(granadeInstance.redLight);
-      if (granadeInstance.redLight.dispose) {
-        granadeInstance.redLight.dispose();
-      }
-      granadeInstance.redLight = null;
-    }
-    
-    if (granadeInstance.rigidBody) {
-      granadeInstance.rigidBody.setTranslation(HIDDEN_WEAPON_POSITION, true);
-      granadeInstance.rigidBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-      granadeInstance.rigidBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    }
-    if (granadeInstance.object) {
-      granadeInstance.object.position.copy(HIDDEN_WEAPON_POSITION);
-    }
-    
-    // mark as available
-    granadeInstance.isAvailable = true;
-  }
-  
-  // throw granade from pool
-  function throwGranade(position, direction, speed = 15, onCreated = null) {
-    // 确保 direction 是 THREE.Vector3
-    const dir = direction instanceof THREE.Vector3 
-      ? direction.clone().normalize() 
-      : new THREE.Vector3(...direction).normalize();
-    
-    // 确保 position 是数组格式
-    const pos = position instanceof THREE.Vector3 
-      ? [position.x, position.y, position.z]
-      : position;
-    
-    // 从对象池获取一个可用的手雷
-    const granadeInstance = getGranadeFromPool();
-    if (!granadeInstance) {
-      console.warn('No available granade in pool');
-      return;
-    }
-    
-    granadeInstance.isAvailable = false;
-    
-    if (granadeInstance.rigidBody) {
-      granadeInstance.rigidBody.setTranslation({ x: pos[0], y: pos[1], z: pos[2] }, true);
-    }
-    if (granadeInstance.object) {
-      granadeInstance.object.position.set(pos[0], pos[1], pos[2]);
-    }
-    
-    if (granadeInstance.rigidBody) {
-      const velocity = dir.clone().multiplyScalar(speed);
-      granadeInstance.rigidBody.setLinvel(
-        { x: velocity.x, y: velocity.y, z: velocity.z },
-        true
-      );
-    }
-    
-    console.log('Granade thrown at', pos, 'direction:', dir, 'speed:', speed);
-    
-    // add red light to granade
-    if (granadeInstance && granadeInstance.object) {
-      const redLight = new THREE.PointLight(0xff0000, 100, 20);
-      redLight.castShadow = false;
-      scene.add(redLight);
-      granadeInstance.redLight = redLight; // store light reference
-      
-      // set initial light position
-      if (granadeInstance.rigidBody) {
-        const bodyPos = granadeInstance.rigidBody.translation();
-        redLight.position.set(bodyPos.x, bodyPos.y, bodyPos.z);
-      } else if (granadeInstance.object) {
-        redLight.position.copy(granadeInstance.object.position);
-      }
-    }
-    
-    // add flash red light effect to granade
-
-
-    const originalMaterials = [];
-    granadeInstance.object.traverse(function(child) {
-    if (child.isMesh && child.material) {
-        const materials = Array.isArray(child.material) ? child.material : [child.material];
-        materials.forEach(mat => {
-        // store original emissive property
-        originalMaterials.push({
-        material: mat,
-        originalEmissive: mat.emissive ? mat.emissive.clone() : new THREE.Color(0x000000),
-        originalEmissiveIntensity: mat.emissiveIntensity !== undefined ? mat.emissiveIntensity : 0
-        });
-        // set red emissive
-        mat.emissive = new THREE.Color(0xff0000);
-        mat.emissiveIntensity = 0;
-        });
-    }
-    });
-    
-    // flash effect
-    let isBright = false;
-    const flashInterval = setInterval(function() {
-    isBright = !isBright;
-    const intensity = isBright ? 1.5 : 0.3;
-    originalMaterials.forEach(item => {
-        item.material.emissiveIntensity = intensity;
-    });
-    }, 100); // flash every 100ms
-    
-    // store flash timer to granade instance, so it can be cleared when exploding
-    granadeInstance.flashInterval = flashInterval;
-    granadeInstance.originalMaterials = originalMaterials;
-    
-    
-    // call callback function, pass granade instance
-    if (onCreated) {
-      onCreated(granadeInstance);
-    }
-  }
+  // 手雷系统函数已移至 modules/Grenades.js
 
   // create scene 1
   createScene1();
@@ -1722,6 +1104,7 @@ function stepFpsController(dt) {
   }
 
   // Sync fps camera position to the kinematic body (follow capsule)
+  // 注意：这个同步会在每帧更新，确保fpsCamera跟随playerBody
   if (activeCamera === fpsCamera && playerBody) {
     const p = playerBody.translation();
     fpsCamera.position.set(p.x, p.y + cameraYOffset, p.z);
@@ -1772,7 +1155,7 @@ function updateFpsCamera() {
     }
   }
   // Update pistol position and orientation based on camera
-  if (activeCamera === fpsCamera && playerHeld === 1) {
+  if (activeCamera === fpsCamera && playerHeld === 1 && pistol && pistol.object) {
     const forward = new THREE.Vector3();
     fpsCamera.getWorldDirection(forward);
 
@@ -1809,7 +1192,7 @@ function updateFpsCamera() {
     pistol.object.quaternion.copy(qBase).multiply(qPitch).multiply(qYaw).multiply(qRoll);
   }
   // Update rifle position and orientation based on camera
-  if (activeCamera === fpsCamera && playerHeld === 2) {
+  if (activeCamera === fpsCamera && playerHeld === 2 && rifle && rifle.object) {
     const forward = new THREE.Vector3();
     fpsCamera.getWorldDirection(forward);
 
@@ -1844,7 +1227,7 @@ function updateFpsCamera() {
     rifle.object.quaternion.copy(qBase).multiply(qPitch).multiply(qYaw).multiply(qRoll);
   }
   // Update granade position and orientation based on camera
-  if (activeCamera === fpsCamera && playerHeld === 3) {
+  if (activeCamera === fpsCamera && playerHeld === 3 && granade && granade.object) {
     const forward = new THREE.Vector3();
     fpsCamera.getWorldDirection(forward);
 
@@ -1874,126 +1257,7 @@ function render(ts) {
   // start stats, for performance monitoring
   if (stats) stats.begin();
 
-  function updateZombies(dt) {
-    if (!(zombies && zombies.length > 0)) return;
-    // mark all alive zombies as idle if not pressing T
-    if (!(movement && movement.zombiesForward)) {
-      for (const z of zombies) {
-        if (!z) continue;
-        if (typeof z.health === 'number' && z.health <= 0) {
-          // 切换为 dead 并播放一次索引 1 的死亡动画（仅播放一次）
-          if (z.state !== 'dead') {
-            z.state = 'dead';
-          }
-          if (Array.isArray(z.animations) && z.animations[1] && z.currentAnimIndex !== 1) {
-            if (z.currentAction && typeof z.currentAction.stop === 'function') {
-              z.currentAction.stop();
-            }
-            const act = z.mixer.clipAction(z.animations[1]);
-            act.reset().setLoop(THREE.LoopOnce, 0);
-            act.clampWhenFinished = true;
-            act.play();
-            z.currentAction = act;
-            z.currentAnimIndex = 1;
-          }
-          continue;
-        }
-        if (z.state !== 'dead') {
-          z.state = 'idle';
-          // 播放 idle 动画（索引 3），避免重复切换
-
-        if (z.currentAnimIndex !== 3) {
-            if (z.currentAction && typeof z.currentAction.stop === 'function') {
-            z.currentAction.stop();
-            }
-            const act = z.mixer.clipAction(z.animations[3]);
-            act.reset().setLoop(THREE.LoopRepeat).play();
-            z.currentAction = act;
-            z.currentAnimIndex = 3;
-        }
-
-        }
-      }
-      return;
-    }
-    const moveSpeed = 10; // 可按需要调整速度（单位：m/s）
-    for (const z of zombies) {
-      if (!z || !z.rigidBody || !z.kcc) continue;
-      // 死亡则不再移动
-      if (typeof z.health === 'number' && z.health <= 0) {
-        z.state = 'dead';
-        continue;
-      }
-      z.state = 'moving';
-      // 播放“移动”动画：索引 13（若已是 13 则不重复切换）
-      if (z.currentAnimIndex !== 13) {
-        if (z.currentAction && typeof z.currentAction.stop === 'function') {
-          z.currentAction.stop();
-        }
-        const act = z.mixer.clipAction(z.animations[13]);
-        act.reset().setLoop(THREE.LoopRepeat).play();
-        z.currentAction = act;
-        z.currentAnimIndex = 13;
-      }
-
-      // 定期随机设定目标朝向（绕 Y 轴），并以一定角速度转向
-      z.turnTime = (typeof z.turnTime === 'number') ? z.turnTime : 0;
-      z.turnTime -= dt;
-      if (typeof z.targetYaw !== 'number') {
-        const initQ = new THREE.Quaternion(z.rigidBody.rotation().x, z.rigidBody.rotation().y, z.rigidBody.rotation().z, z.rigidBody.rotation().w);
-        const initE = new THREE.Euler().setFromQuaternion(initQ, 'YXZ');
-        z.targetYaw = initE.y;
-        z.turnTime = 0;
-      }
-      if (z.turnTime <= 0) {
-        z.targetYaw = Math.random() * Math.PI * 2;
-        z.turnTime = 0.8 + Math.random() * 1.2;
-      }
-      const curQ = new THREE.Quaternion(z.rigidBody.rotation().x, z.rigidBody.rotation().y, z.rigidBody.rotation().z, z.rigidBody.rotation().w);
-      const curE = new THREE.Euler().setFromQuaternion(curQ, 'YXZ');
-      const curYaw = curE.y;
-      let deltaYaw = z.targetYaw - curYaw;
-      deltaYaw = ((deltaYaw + Math.PI) % (Math.PI * 2)) - Math.PI;
-      const turnSpeed = Math.PI;
-      const maxStep = turnSpeed * dt;
-      const step = THREE.MathUtils.clamp(deltaYaw, -maxStep, maxStep);
-      const newYaw = curYaw + step;
-      const faceQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), newYaw);
-      if (typeof z.rigidBody.setNextKinematicRotation === 'function') {
-        z.rigidBody.setNextKinematicRotation({ x: faceQuat.x, y: faceQuat.y, z: faceQuat.z, w: faceQuat.w });
-      }
-
-      // 按当前面朝方向前进
-      const forwardDir = new THREE.Vector3(0, 0, 1).applyQuaternion(faceQuat).normalize();
-
-      // 重力
-      // z.vy = (typeof z.vy === 'number') ? z.vy : 0;
-      z.vy += gravityAccel * dt;
-      if (z.vy < terminalFallSpeed) z.vy = terminalFallSpeed;
-
-      // 期望位移
-      const desired = {
-        x: forwardDir.x * moveSpeed * dt,
-        y: z.vy * dt,
-        z: forwardDir.z * moveSpeed * dt
-      };
-
-      // 碰撞感知位移
-      const controllerCollider = z.controllerCollider ?? (z.colliders && z.colliders[0]);
-      if (!controllerCollider) continue;
-      z.kcc.computeColliderMovement(controllerCollider, desired);
-      const delta = z.kcc.computedMovement();
-
-      // 推进
-      const cur = z.rigidBody.translation();
-      z.rigidBody.setNextKinematicTranslation({ x: cur.x + delta.x, y: cur.y + delta.y, z: cur.z + delta.z });
-
-      // 落地清零竖直速度
-      if (z.kcc.computedGrounded() && z.vy < 0) {
-        z.vy = 0;
-      }
-    }
-  }
+  // updateZombies 函数已移至 modules/Zombies.js
 
   // resize renderer to display size
   resizeRendererToDisplaySize(renderer);
@@ -2037,7 +1301,33 @@ function render(ts) {
   updateMixers(mixers, dt);
 
   // 僵尸移动逻辑
-  updateZombies(dt);
+  updateZombies({
+    zombies: zombies,
+    dt: dt,
+    zombiesForward: movement.zombiesForward,
+    gravityAccel: gravityAccel,
+    terminalFallSpeed: terminalFallSpeed
+  });
+
+  // 更新僵尸死亡计数器（仅在Level1场景显示）
+  if (currentSceneState === SceneState.LEVEL1 && zombieCounterEl && zombieCountEl) {
+    // 统计状态为dead的僵尸数量
+    let deadCount = 0;
+    for (const z of zombies) {
+      if (z && z.state === 'dead') {
+        deadCount++;
+      }
+    }
+    zombieCountEl.textContent = deadCount;
+    zombieCounterEl.style.display = 'block';
+    
+    // 检查是否达到30个击杀
+    if (deadCount >= 30) {
+      showWinMessage();
+    }
+  } else if (zombieCounterEl) {
+    zombieCounterEl.style.display = 'none';
+  }
 
   // 每帧推进物理世界
   physics.step(dt);
@@ -2119,168 +1409,146 @@ function createControls(camera) {
 
 }
 
-// 将 three.js Object3D（可为 Mesh 或 Group）转换为若干 Rapier Trimesh colliders（固定刚体）
-// 并将rb注册入world，返回一个可以用于销毁等操作的rb句柄
-export function addStaticTrimeshColliderFromMesh(RAPIER, world, object3d) {
-    if (!object3d) {
-      console.error('[addStaticTrimeshColliderFromMesh] object3d is not valid');
-      return;
+// addStaticTrimeshColliderFromMesh 和 addCompoundBoxCollidersFromMesh 已移至 modules/GLTFFactory.js
+
+// 重置FPS摄像机到默认位置
+function resetFpsCamera() {
+  if (fpsCamera) {
+    // 重置摄像机位置
+    fpsCamera.position.set(-1700, 12, 800);
+    fpsCamera.quaternion.set(0, 0, 0, 1); // 重置旋转
+    fpsCamera.up.set(0, 1, 0);
+    
+    // 同步物理体位置到摄像机
+    if (playerBody) {
+      playerBody.setTranslation({
+        x: fpsCamera.position.x,
+        y: fpsCamera.position.y - cameraYOffset,
+        z: fpsCamera.position.z
+      }, true);
+      playerBody.setNextKinematicTranslation({
+        x: fpsCamera.position.x,
+        y: fpsCamera.position.y - cameraYOffset,
+        z: fpsCamera.position.z
+      });
     }
-    object3d.updateWorldMatrix(true, true);
-
-    // create a fixed body to hold multiple colliders for the entire scene
-    const rb = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-
-    object3d.traverse((child) => {
-      // only process Mesh
-      if (!child.isMesh) return;
-      const mesh = child;
-      let geom = mesh.geometry;
-      if (!geom || !geom.attributes || !geom.attributes.position) return;
-
-      if (!geom.index) {
-        const count = geom.attributes.position.count;
-        const index = new Uint32Array(count);
-        for (let i = 0; i < count; i++) index[i] = i;
-        geom = geom.clone();
-        geom.setIndex(new THREE.BufferAttribute(index, 1));
-      }
-
-      const pos = geom.attributes.position;
-      const idx = geom.index;
-
-      // vertices transformed to world coordinates
-      const vertices = new Float32Array(pos.count * 3);
-      const v = new THREE.Vector3();
-      for (let i = 0; i < pos.count; i++) {
-        v.fromBufferAttribute(pos, i);
-        v.applyMatrix4(mesh.matrixWorld);
-        const base = i * 3;
-        vertices[base] = v.x;
-        vertices[base + 1] = v.y;
-        vertices[base + 2] = v.z;
-      }
-      // convert indices to suitable TypedArray
-      const indices = (idx.array instanceof Uint32Array || idx.array instanceof Uint16Array)
-        ? idx.array
-        : new Uint32Array(idx.array);
-
-      // create a trimesh collider for the mesh and attach it to the same fixed body
-      world.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices), rb);
-    });
-
-    return rb;
+    
+    // 解锁FPS控制（如果已锁定）
+    if (fpsControls && fpsControls.isLocked) {
+      fpsControls.unlock();
+    }
+    
+    console.log('FPS camera reset to default position');
+  }
 }
 
-// 为给定刚体生成复合盒碰撞体：遍历 object3d 的每个 Mesh，使用其世界 AABB 近似为一个盒体
-// 盒体位置为“刚体本地坐标”，避免整体误差导致悬空；返回创建的所有 colliders
-export function addCompoundBoxCollidersFromMesh(
-  RAPIER,
-  world,
-  rigidBody,
-  object3d,
-  {
-    density = undefined,
-    friction = 0.7,
-    restitution = 0.0
-  } = {}
-) {
-  const colliders = [];
-  if (!object3d || !rigidBody) {
-    console.error('[addCompoundBoxCollidersFromMesh] object3d or rigidBody is not valid');
-    return colliders;
+// 移动FPS摄像机到shooting range位置
+function moveFpsCameraToShootingRange() {
+  if (fpsCamera && playerBody && scene2Position) {
+    const targetPosition = scene2Position.clone().add(new THREE.Vector3(10, 15, 10)); // 场景2物体位置 + 相机高度偏移
+    const bodyPosition = {
+      x: targetPosition.x,
+      y: targetPosition.y - cameraYOffset,
+      z: targetPosition.z
+    };
+    
+    // 立即设置物理体位置（对于 kinematic body，使用 setTranslation）
+    playerBody.setTranslation(bodyPosition, true);
+    // 同时设置下一帧的位置，确保同步
+    playerBody.setNextKinematicTranslation(bodyPosition);
+    
+    // 设置相机位置
+    fpsCamera.position.copy(targetPosition);
+    fpsCamera.quaternion.set(0, 0, 0, 1); // 重置旋转
+    fpsCamera.up.set(0, 1, 0);
+    
+    // 解锁FPS控制（如果已锁定）
+    if (fpsControls && fpsControls.isLocked) {
+      fpsControls.unlock();
+    }
+    
+    console.log('FPS camera moved to shooting range position:', targetPosition, 'body position:', bodyPosition);
+  } else if (!scene2Position) {
+    console.warn('Shooting range position not initialized yet');
   }
-
-  // 刚体的世界矩阵（假设已与 object3d 对齐创建）
-  object3d.updateWorldMatrix(true, true);
-  const bodyMatrixWorld = object3d.matrixWorld.clone();
-  const bodyMatrixInv = bodyMatrixWorld.clone().invert();
-
-  const tmpBox = new THREE.Box3();
-  const tmpCenterWorld = new THREE.Vector3();
-  const tmpSizeWorld = new THREE.Vector3();
-
-  object3d.traverse((child) => {
-    if (!child.isMesh) return;
-
-    // 该 Mesh 的世界 AABB
-    tmpBox.setFromObject(child);
-    tmpBox.getCenter(tmpCenterWorld);
-    tmpBox.getSize(tmpSizeWorld);
-
-    // 忽略非常小的盒子，避免生成过多细碎 collider
-    if (tmpSizeWorld.x < 0.01 && tmpSizeWorld.y < 0.01 && tmpSizeWorld.z < 0.01) return;
-
-    // 转到刚体本地
-    const centerLocal = tmpCenterWorld.clone().applyMatrix4(bodyMatrixInv);
-    const hx = Math.max(tmpSizeWorld.x * 0.5, 0.005);
-    const hy = Math.max(tmpSizeWorld.y * 0.5, 0.005);
-    const hz = Math.max(tmpSizeWorld.z * 0.5, 0.005);
-
-    const collider = world.createCollider(
-      (() => {
-        const d = RAPIER.ColliderDesc
-          .cuboid(hx, hy, hz)
-          .setTranslation(centerLocal.x, centerLocal.y, centerLocal.z)
-          .setFriction(friction)
-          .setRestitution(restitution);
-        // Only apply density if provided; otherwise, leave mass contribution to be set explicitly on body
-        if (typeof density !== 'undefined') d.setDensity(density);
-        return d;
-      })(),
-      rigidBody
-    );
-    colliders.push(collider);
-  });
-
-  return colliders;
 }
 
 // 初始化主菜单
 function initMainMenu() {
   mainMenuEl = document.getElementById('main-menu');
   
-  // 选项1点击事件 - 开始游戏
+  // 选项1点击事件 - Level1
   document.getElementById('menu-option-1').addEventListener('click', function() {
-    console.log('Menu option 1 clicked - Start Game');
+    console.log('Menu option 1 clicked - Level1');
     hideMainMenu();
+    currentSceneState = SceneState.LEVEL1;
     if(!initMap) {
         initMap = true;
         main();
     }else{
         isMenuVisible = false;
-
+        // 重置FPS摄像机位置
+        resetFpsCamera();
     }
-    // 如果游戏还未初始化，则启动游戏
-    // if (!scene) {
-    //   main();
-    // }
-
   });
   
-  // 选项2点击事件
+  // 选项2点击事件 - DEBUG
   document.getElementById('DEBUG').addEventListener('click', function() {
-    console.log('DEBUG clicked (placeholder)');
+    console.log('DEBUG clicked');
     DEBUG = true;
-    main();
+    hideMainMenu();
+    currentSceneState = SceneState.LEVEL1;
+    if(!initMap) {
+        initMap = true;
+        main();
+    }else{
+        isMenuVisible = false;
+    }
   });
   
-  // 选项3点击事件
+  // option3 clicked - Shooting Range
   document.getElementById('shooting-range').addEventListener('click', function() {
-    console.log('Menu option 3 clicked (placeholder)');
-    // 占位符：可以在这里添加选项3的功能
+    console.log('Shooting Range clicked');
+    hideMainMenu();
+    currentSceneState = SceneState.SHOOTING_RANGE;
+    
+    if(!initMap) {
+        initMap = true;
+        main();
+
+        const checkAndMove = setInterval(() => {
+          if (scene2Position && fpsCamera && playerBody) {
+            clearInterval(checkAndMove);
+            moveFpsCameraToShootingRange();
+          }
+        }, 100);
+
+        setTimeout(() => {
+          clearInterval(checkAndMove);
+          if (scene2Position && fpsCamera && playerBody) {
+            moveFpsCameraToShootingRange();
+          } else {
+            console.warn('Failed to move camera to shooting range: scene not loaded yet');
+          }
+        }, 10000);
+    }else{
+        isMenuVisible = false;
+        // 移动FPS摄像机到shooting range位置
+        moveFpsCameraToShootingRange();
+    }
+    // 如果已经在射击场，可以添加切换逻辑
   });
   
-  // 鼠标悬停效果
-  const menuButtons = document.querySelectorAll('#main-menu button');
-  menuButtons.forEach(button => {
-    button.addEventListener('mouseenter', function() {
-      this.style.backgroundColor = '#45a049';
-    });
-    button.addEventListener('mouseleave', function() {
-      this.style.backgroundColor = '#4CAF50';
-    });
-  });
+//   // 鼠标悬停效果
+//   const menuButtons = document.querySelectorAll('#main-menu button');
+//   menuButtons.forEach(button => {
+//     button.addEventListener('mouseenter', function() {
+//       this.style.backgroundColor = '#45a049';
+//     });
+//     button.addEventListener('mouseleave', function() {
+//       this.style.backgroundColor = '#4CAF50';
+//     });
+//   });
 }
 
 // 显示主菜单
@@ -2288,6 +1556,7 @@ function showMainMenu() {
   if (mainMenuEl) {
     mainMenuEl.style.display = 'flex';
     isMenuVisible = true;
+    currentSceneState = SceneState.MENU;
   }
 }
 
@@ -2299,8 +1568,67 @@ function hideMainMenu() {
   }
 }
 
+// 显示Win消息并返回主菜单
+function showWinMessage() {
+  if (winMessageEl) {
+    winMessageEl.style.display = 'flex';
+    
+    // 3秒后返回主菜单
+    setTimeout(() => {
+      hideWinMessage();
+      returnToMainMenu();
+    }, 3000);
+  }
+}
+
+// 隐藏Win消息
+function hideWinMessage() {
+  if (winMessageEl) {
+    winMessageEl.style.display = 'none';
+  }
+}
+
+// 返回主菜单（带清理逻辑）
+function returnToMainMenu() {
+  // 如果当前在level场景，销毁所有僵尸
+  if (currentSceneState === SceneState.LEVEL1) {
+    destroyAllZombies({
+      zombies: zombies,
+      scene: scene,
+      world: world,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects
+    });
+  }
+  
+  // 解锁FPS控制（如果已锁定）
+  if (fpsControls && fpsControls.isLocked) {
+    fpsControls.unlock();
+  }
+  
+  // 隐藏Win消息（如果显示）
+  hideWinMessage();
+  
+  // 显示主菜单
+  showMainMenu();
+}
+
 // 初始化主菜单
 initMainMenu();
+
+// 全局H键监听器（在任何界面都可以按H返回主菜单）
+window.addEventListener('keydown', function(e) {
+  if (e.code === 'KeyH') {
+    // 如果游戏已初始化，调用返回主菜单函数
+    if (typeof returnToMainMenu === 'function') {
+      returnToMainMenu();
+    } else {
+      // 如果游戏还未初始化，直接显示主菜单
+      showMainMenu();
+    }
+  }
+});
 
 // 启动render循环（即使菜单可见也要运行，以便菜单隐藏后能继续）
 function startRenderLoop() {

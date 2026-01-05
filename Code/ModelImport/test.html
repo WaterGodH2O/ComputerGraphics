@@ -15,9 +15,19 @@
         <div style="position: absolute; top: 50%; left: 0; width: 100%; height: 2px; background-color: white; transform: translateY(-50%);"></div>
         <div style="position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background-color: white; transform: translateX(-50%);"></div>
     </div>
+    <!-- 僵尸死亡计数器 -->
+    <div id="zombie-counter" style="display: none; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); color: white; font-size: 32px; font-weight: bold; text-align: center; z-index: 1001; pointer-events: none; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);">
+        Zombies Killed: <span id="zombie-count">0</span>
+    </div>
+    <!-- Win消息 -->
+    <div id="win-message" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.9); z-index: 3000; justify-content: center; align-items: center; flex-direction: column;">
+        <h1 style="color: #FFD700; font-size: 72px; margin-bottom: 30px; text-align: center; text-shadow: 4px 4px 8px rgba(0, 0, 0, 1);">YOU WIN!</h1>
+        <p style="color: white; font-size: 32px; text-align: center; margin-bottom: 20px;">30 Zombies Killed</p>
+        <p style="color: #ccc; font-size: 20px; text-align: center;">Returning to main menu...</p>
+    </div>
     <!-- 主菜单 -->
     <div id="main-menu" style="display: flex; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.8); z-index: 2000; justify-content: center; align-items: center; flex-direction: column;">
-        <h1 style="color: white; font-size: 48px; margin-bottom: 50px; text-align: center;">主菜单</h1>
+        <h1 style="color: white; font-size: 48px; margin-bottom: 50px; text-align: center;">Main Menu</h1>
         <div style="display: flex; flex-direction: column; gap: 20px;">
             <button id="menu-option-1" style="padding: 15px 40px; font-size: 24px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; transition: background-color 0.3s;">
                 Level1
@@ -25,8 +35,8 @@
             <button id="DEBUG" style="padding: 15px 40px; font-size: 24px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; transition: background-color 0.3s;">
                 DEBUG
             </button>
-            <button id="menu-option-3" style="padding: 15px 40px; font-size: 24px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; transition: background-color 0.3s;">
-                选项3 (占位符)
+            <button id="shooting-range" style="padding: 15px 40px; font-size: 24px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; transition: background-color 0.3s;">
+                Shooting Range
             </button>
         </div>
     </div>
