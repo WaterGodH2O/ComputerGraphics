@@ -1,0 +1,118 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  rulecolor=\color{black},
+  showstringspaces=false
+}
+
+\title{CS324 Coursework Report}
+\author{SSSP Yang \quad 5539415}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{How to Run}
+
+\subsection{Environment}
+\begin{itemize}[leftmargin=*]
+  \item Tested browser: \textbf{Google Chrome} (department Linux machines).
+  \item The game must be served via a web server (asset loading fail under \texttt{file://}).
+\end{itemize}
+
+\subsection{Start a local server}
+Open a terminal, go to the \textbf{Code} directory, and run any local web server. For example:
+\begin{itemize}[leftmargin=*]
+  \item \texttt{python3 -m http.server 8000}
+\end{itemize}
+
+You may use any other server available on the department machines; the only requirement is that it serves the project folder over HTTP.
+
+\subsection{Launch the game}
+\begin{enumerate}[leftmargin=*]
+  \item Open Chrome and navigate to:
+  \begin{lstlisting}
+http://localhost:8000/
+  \end{lstlisting}
+
+  \item From the directory listing, open the game entry:
+  \begin{itemize}[leftmargin=*]
+    \item Navigate to \texttt{Game/} and open the entry page (e.g., \texttt{index.html} / \texttt{Game.html}).
+    \item If your packaged structure uses a different entry, follow the same path (e.g., \texttt{Solution/Game/...}).
+  \end{itemize}
+
+  \item You will see the main menu page. Click \textbf{[START / PLAY / xxxx]} to enter the game.
+\end{enumerate}
+
+\subsection{Controls (as shown in the in-game instructions)}
+\begin{itemize}[leftmargin=*]
+  \item Mouse: look around (FPS pointer-lock style).
+  \item \textbf{F}: toggle flashlight.
+  \item \textbf{4}: switch to grenade and throw (grenade provides a red point light + emissive material).
+  \item Other controls (movement / weapon switching / firing) are described in the menu instruction section.
+\end{itemize}
+
+If the mouse cursor is locked, press \textbf{Esc} to release the pointer lock and return to menu interaction.
+
+\section{Game Overview}
+This project is a first-person shooter (FPS). The player explores a level and eliminates zombies using multiple weapons. The win condition is achieving \textbf{30 zombie kills}, after which the objective is considered completed.
+
+The gameplay loop is:
+\begin{enumerate}[leftmargin=*]
+  \item Spawn into the selected environment.
+  \item Use FPS controls to aim and attack zombies.
+  \item Track kill progress and reach 30 kills to complete the objective.
+\end{enumerate}
+
+\section{Implementation Details}
+
+\subsection{Levels (two distinct environments)}
+The game includes two uniquely designed environments:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Level 1}: the primary gameplay map.
+  \item \textbf{Shooting Range}: a separate training/testing scene with a distinctly different layout and visual appearance.
+\end{itemize}
+
+Both environments are designed to look \textbf{distinctively different}, and each level uses \textbf{distinct textures}, satisfying the ``two unique levels + distinct texture per level'' requirement.
+
+\subsection{Lighting (ambient + multiple non-ambient sources per level)}
+Lighting is implemented with:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Ambient light} in the scene to provide baseline illumination.
+  \item A \textbf{sun light} in both Level 1 and the Shooting Range (implemented as a directional light source).
+\end{itemize}
+
+In addition, the player can introduce independent dynamic light sources:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Flashlight} (toggle with \textbf{F}): implemented as a \textbf{SpotLight} that follows the player’s camera position and view direction, producing a focused beam effect suitable for FPS navigation.
+  \item \textbf{Grenade light} (weapon switch with \textbf{4}, then throw): the grenade acts as a moving object with a \textbf{red PointLight} attached. The grenade material also uses \textbf{red emissive} properties so it visibly glows, reinforcing the light source both physically (light) and visually (material emission).
+\end{itemize}
+
+This setup ensures each level includes ambient light plus at least two distinct non-ambient light sources (sun + flashlight / grenade), meeting the light source requirement.
+
+\subsection{Camera / View Control}
+The game uses an FPS camera controlled by the mouse (pointer lock). A \textbf{pitch (vertical look) clamp} is applied to prevent unnatural rotation and keep the world orientation stable in the player’s view.
+
+Because this is an action game with a mouse-controllable viewpoint, it satisfies the camera requirement as specified.
+
+\section{References}
+List all external code, libraries beyond lab materials, models, textures, and tutorials you used. Include URLs and clearly indicate what each source was used for. Also ensure attribution appears in the code where relevant.
+
+\begin{itemize}[leftmargin=*]
+  \item Three.js (if applicable): \url{https://threejs.org/} --- rendering framework.
+  \item <Asset/Texture/Model source> --- <what it was used for>.
+  \item <Tutorial/Code reference> --- <what it was used for>.
+\end{itemize}
+
+\end{document}

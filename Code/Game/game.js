@@ -33,51 +33,51 @@ import {
 } from './modules/Zombies.js';
 
 let camera, fpsCamera, controls, fpsControls, scene, renderer, canvas, world, map_city  ;
-let scene2Position = null; // 场景2物体的位置
+let scene2Position = null; // Scene2 object position
 let crosshairEl = null; // 十字准星元素
 let mainMenuEl = null; // 主菜单元素
 let isMenuVisible = true; // 菜单是否可见
-let zombieCounterEl = null; // 僵尸计数器元素
-let zombieCountEl = null; // 僵尸数量显示元素
-let winMessageEl = null; // Win消息元素
+let zombieCounterEl = null; // Zombie counter element
+let zombieCountEl = null; // Zombie count display element
+let winMessageEl = null; // Win message element
 let sun, sunHelper, sunCamHelper;
 let stats;
 
 let initMap = false;
 
-// 场景状态枚举
+// Scene state enumeration
 const SceneState = {
-  MENU: 'menu',           // 主菜单
+  MENU: 'menu',           // Main menu
   LEVEL1: 'level1',      // Level1场景
-  SHOOTING_RANGE: 'shooting_range'  // 射击场场景
+  SHOOTING_RANGE: 'shooting_range'  // Shooting range scene
 };
 
-// 当前场景状态
+// Current scene state
 let currentSceneState = SceneState.MENU;
-// 手电筒
+// Flashlight
 let flashlight = null;
 let flashlightEnabled = false;
 
-// step 时会更新
-const dynamicGltfObjects = []; // 动态 glTF 对象列表，用于同步位置
-const mixers = []; // 动画混合器列表，用于播放动画
-const zombies = [];          // 多个僵尸/动态物体的句柄列表
-const zombieMixers = [];     // 多个僵尸动画混合器列表
+    // step will be updated
+const dynamicGltfObjects = []; // Dynamic glTF object list, used to sync position
+const mixers = []; // Animation mixer list, used to play animation
+const zombies = [];          // Multiple zombies/dynamic object handles list
+const zombieMixers = [];     // Multiple zombies animation mixer list
 let DEBUG = false;
 
-// 全局：手枪操作句柄
+// Global: pistol handle
 let pistol = null;
-// 手枪开火抖动/后坐力状态
-let pistolRecoil = 0; // 线性后坐力强度（0..）
-let pistolShake = 0;  // 抖动强度（0..）
-// 全局：步枪操作句柄与后坐力状态
+// Pistol fire shake/recoil state
+let pistolRecoil = 0; // Linear recoil strength (0..)
+let pistolShake = 0;  // Shake strength (0..)
+// Global: rifle handle and recoil state
 let rifle = null;
 let rifleRecoil = 0;
 let rifleShake = 0;
-// 全局：手雷操作句柄
+// Global: grenade handle
 let granade = null;
-// 手雷对象池已移至 modules/Grenades.js
-// 武器音效
+// Grenade object pool is moved to modules/Grenades.js
+// Weapon sounds
 let pistolSound = null;
 let rifleSound = null;
 let explosionSound = null;
@@ -109,7 +109,7 @@ const physics = await initPhysics({
 // expose rapier world for custom colliders
 world = physics.world;
 
-// 初始化性能监测面板与最低帧率覆盖层
+// Initialize performance monitoring panel and lowest FPS overlay layer
 function initPerfHUD() {
   // Stats
   stats = new Stats();
@@ -117,7 +117,7 @@ function initPerfHUD() {
   stats.dom.style.right = '0px';
   document.body.appendChild(stats.dom);
 
-  // 低帧率覆盖层
+  // Low FPS overlay layer
   lowFpsEl = document.createElement('div');
   lowFpsEl.style.position = 'fixed';
   lowFpsEl.style.top = '0';
@@ -133,7 +133,7 @@ function initPerfHUD() {
   lowFpsEl.textContent = 'Low FPS: --';
   document.body.appendChild(lowFpsEl);
 
-  // 当前位置覆盖层（位于低帧率下方）
+  // Current position overlay layer (below low FPS)
   posEl = document.createElement('div');
   posEl.style.position = 'fixed';
   posEl.style.top = '0';
@@ -149,7 +149,7 @@ function initPerfHUD() {
   posEl.textContent = 'Pos: --, --, --';
   document.body.appendChild(posEl);
 
-  // 每 5 秒重置最低帧率显示
+  // Reset lowest FPS display every 5 seconds
   if (lowFpsResetId) clearInterval(lowFpsResetId);
   lowFpsResetId = setInterval(() => {
     lowFps = Infinity;
@@ -157,7 +157,7 @@ function initPerfHUD() {
   }, 5000);
 }
 
-// 左上角 DEBUG 开关
+// Left top DEBUG toggle
 function initDebugToggle() {
   const label = document.createElement('label');
   label.style.position = 'fixed';
@@ -189,13 +189,13 @@ function initDebugToggle() {
   label.appendChild(document.createTextNode('DEBUG'));
   document.body.appendChild(label);
 }
-// 初始化场景光照（支持调试 helper 开关）
+    // Initialize scene lighting (support debug helper toggle)
 function initLighting(debug = false) {
-  // 环境光
+  // Ambient light
   const ambLight = new THREE.AmbientLight(0x404040, 1);
   scene.add(ambLight);
 
-  // 太阳光（方向光）
+  // Sunlight (directional light)
   sun = new THREE.DirectionalLight(0xffffff, 2);
   sun.position.set(300, 1000, 5);
   sun.castShadow = true;
@@ -209,13 +209,13 @@ function initLighting(debug = false) {
   sun.shadow.bias = -0.0005;
   scene.add(sun);
 
-  // 太阳目标点（指向）
+  // Sun target point (pointing)
   const sunTarget = new THREE.Object3D();
   sunTarget.position.set(-5, 0, 0);
   scene.add(sunTarget);
   sun.target = sunTarget;
 
-  // 调试辅助器
+  // Debug helper
   sunHelper = new THREE.DirectionalLightHelper(sun, 5);
   scene.add(sunHelper);
   sunHelper.visible = !!debug;
@@ -224,7 +224,7 @@ function initLighting(debug = false) {
   scene.add(sunCamHelper);
   sunCamHelper.visible = !!debug;
 
-  // 点光源（可选，保留原有效果）
+  // Point light (optional, keep original effect)
   const pointLight = new THREE.PointLight(0xFFFFFF, 75);
   pointLight.castShadow = true;
   pointLight.position.set(5, 10, 8);
@@ -235,7 +235,7 @@ function initLighting(debug = false) {
   pointHelper.visible = !!debug;
 }
 
-// 初始化天空盒（占位符路径，替换为你的图片）
+// Initialize skybox (placeholder path, replace with your image)
 function initSkybox() {
   const exr = new EXRLoader().load(
     '../Resources/cloud/citrus_orchard_road_puresky_2k.exr',
@@ -305,7 +305,7 @@ const smoothedMove = { forward: 0, right: 0 };
 const movementSmoothing = 10;
 // Gravity for FPS kinematic character
 let verticalVelocity = 0;
-const gravityAccel = -9.81*14;     // 地图尺寸有点大 放大3倍
+const gravityAccel = -9.81*14;     // map size is a bit large
 const terminalFallSpeed = -300;  // clamp fall speed
 // Jump state
 let requestJump = false;
@@ -348,7 +348,7 @@ function main() {
 
   // Create FPS camera + controls
   fpsCamera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-  // 不在这里设置fpsCamera位置，位置设置全部通过按键回调完成
+  // Do not set fpsCamera position here, position setting is done through key callback
   fpsCamera.rotation.order = 'YXZ';
   fpsControls = new PointerLockControls(fpsCamera, renderer.domElement);
   fpsControls.pointerSpeed = 0.8;
@@ -362,7 +362,7 @@ function main() {
   flashlight.shadow.camera.far = 150;
   flashlight.visible = false; // default off
   
-  // 创建手电筒目标点
+  // Create flashlight target point
   const flashlightTarget = new THREE.Object3D();
   scene.add(flashlightTarget);
   flashlight.target = flashlightTarget;
@@ -371,7 +371,7 @@ function main() {
 
   // Create kinematic capsule for FPS character and controller
   {
-    // 使用默认初始位置，不依赖fpsCamera位置
+    // Use default initial position, not dependent on fpsCamera position
     const defaultStartPos = { x: -1700, y: 12 - cameraYOffset, z: 800 };
     playerBody = world.createRigidBody(
       RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(defaultStartPos.x, defaultStartPos.y, defaultStartPos.z)
@@ -394,13 +394,13 @@ function main() {
     charController.setMaxSlopeClimbAngle(Math.PI * 0.5);
     charController.setMinSlopeSlideAngle(Math.PI * 0.9);
     charController.enableSnapToGround(0.3);
-    charController.setApplyImpulsesToDynamicBodies(true); // 允许对动态物体施加冲量并设置角色质量
+    charController.setApplyImpulsesToDynamicBodies(true); // Allow applying impulses to dynamic bodies and set character mass
     charController.setCharacterMass(800); // 近似人体质量，可按需要调整
   }
 
 
 
-  // 统一初始化 HUD
+  // Unified initialization of HUD
   initPerfHUD();
   initDebugToggle();
 
@@ -415,7 +415,7 @@ function main() {
   // Set active camera/controls default to FPS
   activeCamera = fpsCamera;
   activeControls = fpsControls;
-  // 显示十字准星
+  // Show crosshair
   if (crosshairEl) crosshairEl.style.display = 'block';
 
   // Toggle cameras with 'P'
@@ -435,7 +435,7 @@ function main() {
       }
       activeCamera = fpsCamera;
       activeControls = fpsControls;
-      // 显示十字准星
+      // Show crosshair
       if (crosshairEl) crosshairEl.style.display = 'block';
     } else {
       // switch to orbit
@@ -444,7 +444,7 @@ function main() {
       camera.quaternion.copy(fpsCamera.quaternion);
       activeCamera = camera;
       activeControls = controls;
-      // 隐藏十字准星
+      // Hide crosshair
       if (crosshairEl) crosshairEl.style.display = 'none';
     }
   }
@@ -466,7 +466,7 @@ function main() {
       case 'KeyT': movement.zombiesForward = true; break;
       case 'Digit1': 
         playerHeld = 1; 
-        // 隐藏其他武器
+        // Hide other weapons
         if (rifle && rifle.object) rifle.object.position.copy(HIDDEN_WEAPON_POSITION);
         if (granade && granade.object) granade.object.position.copy(HIDDEN_WEAPON_POSITION);
         break;
@@ -477,7 +477,7 @@ function main() {
         break;
       case 'Digit2': 
         playerHeld = 2; 
-        // 隐藏其他武器
+        // Hide other weapons
         if (pistol && pistol.object) pistol.object.position.copy(HIDDEN_WEAPON_POSITION);
         if (granade && granade.object) granade.object.position.copy(HIDDEN_WEAPON_POSITION);
         break;
@@ -488,7 +488,7 @@ function main() {
         break;
       case 'Digit3': 
         playerHeld = 3; 
-        // 隐藏其他武器
+        // Hide other weapons
         if (pistol && pistol.object) pistol.object.position.copy(HIDDEN_WEAPON_POSITION);
         if (rifle && rifle.object) rifle.object.position.copy(HIDDEN_WEAPON_POSITION);
         break;
@@ -499,7 +499,7 @@ function main() {
         break;
       case 'Digit4': 
         playerHeld = 4; 
-        // 隐藏所有武器
+        // Hide all weapons
         if (pistol && pistol.object) pistol.object.position.copy(HIDDEN_WEAPON_POSITION);
         if (rifle && rifle.object) rifle.object.position.copy(HIDDEN_WEAPON_POSITION);
         if (granade && granade.object) granade.object.position.copy(HIDDEN_WEAPON_POSITION);
@@ -511,7 +511,7 @@ function main() {
         if (granade && granade.object) granade.object.position.copy(HIDDEN_WEAPON_POSITION);
         break;
       case 'KeyY': {
-        // 以玩家位置或相机位置为中心批量生成僵尸
+        // Spawn zombies around player or camera position
         let c = null;
         
         const p = fpsCamera.position;
@@ -540,7 +540,7 @@ function main() {
         break;
       case 'KeyP': toggleCamera(); break;
       case 'KeyF':
-        // 切换手电筒开关
+        // Toggle flashlight switch
         flashlightEnabled = !flashlightEnabled;
         if (flashlight) {
           flashlight.visible = flashlightEnabled;
@@ -548,23 +548,23 @@ function main() {
         console.log('Flashlight', flashlightEnabled ? 'ON' : 'OFF');
         break;
       case 'KeyL': 
-        // 将FPS相机移动到场景2物体的创建坐标
+        // Move FPS camera to scene2 object creation coordinates
         if (fpsCamera && playerBody && scene2Position) {
-          const targetPosition = scene2Position.clone().add(new THREE.Vector3(10, 15, 10)); // 场景2物体位置 + 相机高度偏移
+          const targetPosition = scene2Position.clone().add(new THREE.Vector3(10, 15, 10)); // scene2 object position + camera height offset
           const bodyPosition = {
             x: targetPosition.x,
             y: targetPosition.y,
             z: targetPosition.z
           };
           
-          // 立即设置物理体位置（对于 kinematic body，使用 setTranslation）
+          // Immediately set physical body position (for kinematic body, use setTranslation)
           playerBody.setTranslation(bodyPosition, true);
-          // 同时设置下一帧的位置，确保同步
+          // Set next frame position, ensure synchronization
           playerBody.setNextKinematicTranslation(bodyPosition);
           
-          // 设置相机位置
+          // Set camera position
           fpsCamera.position.copy(targetPosition);
-          fpsCamera.quaternion.set(0, 0, 0, 1); // 重置旋转
+          fpsCamera.quaternion.set(0, 0, 0, 1); // Reset rotation
           fpsCamera.up.set(0, 1, 0);
           
           console.log('FPS camera moved to scene 2 position:', targetPosition, 'body position:', bodyPosition);
@@ -588,21 +588,21 @@ function main() {
 
   // Weapon handlers
   function weapon1({ point, owner }) {
-    // 击中僵尸则造成伤害
+    // If zombie is hit, cause damage
     if (owner && typeof owner.health === 'number') {
       owner.health = Math.max(0, owner.health - 34);
       if (owner.health <= 0) {
         owner.state = 'dead';
       }
     }
-    // 触发手枪后坐力与抖动
+    // Trigger pistol recoil and shake
     pistolRecoil = Math.min(pistolRecoil + 1.0, 2.0);
     pistolShake = Math.min(pistolShake + 1.0, 2.0);
-    // 播放手枪枪声
+    // Play pistol sound
     if (!pistolSound) {
       pistolSound = new Audio('../Sounds/Pistol_Sound.mp3');
     }
-    pistolSound.currentTime = 0; // 重置到开头
+    pistolSound.currentTime = 0; // Reset to beginning
     pistolSound.play().catch(err => console.error('Failed to play pistol sound:', err));
     console.log('weapon1 fired at', point, 'owner:', owner);
   }
@@ -613,32 +613,32 @@ function main() {
           owner.state = 'dead';
         }
       }
-    // 触发步枪后坐力与抖动
+    // Trigger rifle recoil and shake
     rifleRecoil = Math.min(rifleRecoil + 5.0, 6.0);
     rifleShake = Math.min(rifleShake + 5.0, 6.0);
-    // 播放步枪枪声
+    // Play rifle sound
     if (!rifleSound) {
       rifleSound = new Audio('../Sounds/Rifle_Sound.mp3');
     }
-    rifleSound.currentTime = 0; // 重置到开头
+    rifleSound.currentTime = 0; // Reset to beginning
     rifleSound.play().catch(err => console.error('Failed to play rifle sound:', err));
     console.log('weapon2 fired at', point, 'owner:', owner);
   }
   function weapon3({ point, owner }) {
-    // 在 FPS 视角下从相机位置按相机朝向投掷手雷
+    // Throw grenade from camera position in FPS view
     if (activeCamera === fpsCamera) {
       const throwPosition = fpsCamera.position.clone();
       const throwDirection = new THREE.Vector3();
       fpsCamera.getWorldDirection(throwDirection);
       
-      // 投掷手雷，并在创建后设置6秒销毁定时器
+      // Throw grenade, and set 6 second destroy timer after creation
       throwGranade({
         position: throwPosition,
         direction: throwDirection,
         speed: 200,
         scene: scene,
         onCreated: function(granadeInstance) {
-          // 播放爆炸声的回调
+          // Callback to play explosion sound
           const playExplosionSound = () => {
             if (!explosionSound) {
               explosionSound = new Audio('../Sounds/explosion.mp3');
@@ -647,7 +647,7 @@ function main() {
             explosionSound.play().catch(err => console.error('Failed to play explosion sound:', err));
           };
           
-          // 设置爆炸定时器
+          // Set explosion timer
           granadeInstance.timeoutId = setupGranadeExplosion({
             granadeInstance: granadeInstance,
             scene: scene,
@@ -725,14 +725,14 @@ function main() {
   }
   window.addEventListener('mousedown', onMouseDown);
 
-  // 僵尸系统函数已移至 modules/Zombies.js
+  // Zombie system functions are moved to modules/Zombies.js
 
-  // 创建场景1的所有对象
+  // Create all objects for scene1
   function createScene1() {
     scene.background = new THREE.Color('black');
 
     const loader = new GLTFLoader();
-    // load city building set 1
+    // load city building set 1 from GlTF_Models/ccity_building_set_1/scene.gltf
     loader.load('../GlTF_Models/ccity_building_set_1/scene.gltf', function (gltf) {
 
         const { rigidBody } = createStaticGLTF({
@@ -751,7 +751,7 @@ function main() {
         const m = new THREE.AnimationMixer(gltf.scene);
         mixers.push(m);
         const action = m.clipAction(gltf.animations[0]);
-        action.play(); //激活动作 然后在渲染部分调用mixer.update(dt)更新动作
+        action.play(); // Activate animation, then call mixer.update(dt) in render part to update animation
       }
       
       map_city = rigidBody;
@@ -770,7 +770,7 @@ function main() {
         rotation: [0, 0, 0],
         scale: [10, 10, 10],
         enableShadows: true,
-        shape: 'compound',            // 或 'sphere'
+        shape: 'compound',            // or 'sphere'
         // Use explicit mass and lower friction to make it pushable
         targetMass: 200,
         friction: 0.3,
@@ -800,7 +800,7 @@ function main() {
         rotation: [0, 0, 0],
         scale: [18, 18, 18],
         enableShadows: true,
-        shape: 'No',            // 或 'sphere'
+        shape: 'No',            // or 'sphere'
         // Use explicit mass and lower friction to make it pushable
         targetMass: 200,
         friction: 0.3,
@@ -816,7 +816,7 @@ function main() {
         addColliderDebugBox: addColliderDebugBoxForBody,
         addColliderDebugCapsule: addColliderDebugCapsuleForBody
       });
-      // 如果当前不是武器1，则隐藏手枪
+      // If current weapon is not weapon 1, hide pistol
       if (playerHeld !== 1 && pistol && pistol.object) {
         pistol.object.position.copy(HIDDEN_WEAPON_POSITION);
       }
@@ -850,7 +850,7 @@ function main() {
         addColliderDebugBox: addColliderDebugBoxForBody,
         addColliderDebugCapsule: addColliderDebugCapsuleForBody
       });
-      // 如果当前不是武器2，则隐藏步枪
+      // If current weapon is not weapon 2, hide rifle
       if (playerHeld !== 2 && rifle && rifle.object) {
         rifle.object.position.copy(HIDDEN_WEAPON_POSITION);
       }
@@ -973,9 +973,9 @@ function main() {
     scene.background = new THREE.Color('black');
 
     const loader = new GLTFLoader();
-    // load static GLTF model for scene 2
+    // load static GLTF model for scene 2 from GlTF_Models/shooting_range/scene.gltf
     loader.load('../GlTF_Models/shooting_range/scene.gltf', function (gltf) {
-        const scene2Pos = [-6362, 732, -13395]; // 场景2物体的创建位置
+        const scene2Pos = [-6362, 732, -13395]; // scene2 object creation position
         scene2Position = new THREE.Vector3(scene2Pos[0], scene2Pos[1], scene2Pos[2]);
 
         const { rigidBody } = createStaticGLTF({
@@ -994,15 +994,15 @@ function main() {
         const m = new THREE.AnimationMixer(gltf.scene);
         mixers.push(m);
         const action = m.clipAction(gltf.animations[0]);
-        action.play(); //激活动作 然后在渲染部分调用mixer.update(dt)更新动作
+        action.play(); // Activate animation, then call mixer.update(dt) in render part to update animation
       }
       
-      // 可以保存刚体引用，如果需要后续操作
+      // Can save rigid body reference, if needed for后续操作
       // map_scene2 = rigidBody;
       
-      // 如果当前场景状态是SHOOTING_RANGE，自动移动相机到shooting range位置
+      // If current scene state is SHOOTING_RANGE, automatically move camera to shooting range position
       if (currentSceneState === SceneState.SHOOTING_RANGE && fpsCamera && playerBody) {
-        // 使用setTimeout确保所有初始化完成
+        // Use setTimeout to ensure all initialization is complete
         setTimeout(() => {
           moveFpsCameraToShootingRange();
         }, 100);
@@ -1015,7 +1015,7 @@ function main() {
     });
   }
 
-  // 手雷系统函数已移至 modules/Grenades.js
+  // Grenade system functions are moved to modules/Grenades.js
 
   // create scene 1
   createScene1();
@@ -1275,9 +1275,9 @@ function render(ts) {
   // step fps controller
   stepFpsController(dt);
 
-  // 衰减手枪后坐力/抖动（基于 dt）
+  // Decay pistol recoil/shake (based on dt)
   {
-    const recoilDecay = Math.exp(-6.0 * dt);  // 越大越快恢复
+    const recoilDecay = Math.exp(-6.0 * dt);  
     const shakeDecay = Math.exp(-12.0 * dt);
     pistolRecoil *= recoilDecay;
     pistolShake *= shakeDecay;
@@ -1297,10 +1297,10 @@ function render(ts) {
 
 
   renderer.render(scene, activeCamera);
-  // 更新动画模块
+  // Update animation module
   updateMixers(mixers, dt);
 
-  // 僵尸移动逻辑
+  // Zombie movement logic
   updateZombies({
     zombies: zombies,
     dt: dt,
@@ -1309,9 +1309,9 @@ function render(ts) {
     terminalFallSpeed: terminalFallSpeed
   });
 
-  // 更新僵尸死亡计数器（仅在Level1场景显示）
+  // Update zombie death counter (only displayed in Level1 scene)
   if (currentSceneState === SceneState.LEVEL1 && zombieCounterEl && zombieCountEl) {
-    // 统计状态为dead的僵尸数量
+    // Count number of zombies with state 'dead'
     let deadCount = 0;
     for (const z of zombies) {
       if (z && z.state === 'dead') {
@@ -1321,7 +1321,7 @@ function render(ts) {
     zombieCountEl.textContent = deadCount;
     zombieCounterEl.style.display = 'block';
     
-    // 检查是否达到30个击杀
+    // Check if 30 kills are reached
     if (deadCount >= 30) {
       showWinMessage();
     }
@@ -1329,14 +1329,14 @@ function render(ts) {
     zombieCounterEl.style.display = 'none';
   }
 
-  // 每帧推进物理世界
+  // Advance physics world by one frame
   physics.step(dt);
-  // 更新碰撞盒可视化
+  // Update collider visualization
   updateColliderDebugs();
   // 同步动态 glTF 对象 Mesh <- RigidBody
   for (const o of dynamicGltfObjects) {
     if (o.sync) o.sync();
-    // 更新手雷上的红色光源位置
+    // Update red light position on grenade
     if (o.redLight && o.rigidBody) {
       const pos = o.rigidBody.translation();
       o.redLight.position.set(pos.x, pos.y, pos.z);
@@ -1345,7 +1345,7 @@ function render(ts) {
     }
   }
 
-  // 更新右上角坐标显示（使用当前激活相机的位置）
+  // Update top right corner coordinate display (using current active camera position)
   if (posEl && activeCamera) {
     const p = activeCamera.position;
     posEl.textContent = `Pos: ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}`;
@@ -1411,15 +1411,15 @@ function createControls(camera) {
 
 // addStaticTrimeshColliderFromMesh 和 addCompoundBoxCollidersFromMesh 已移至 modules/GLTFFactory.js
 
-// 重置FPS摄像机到默认位置
+// Reset FPS camera to default position
 function resetFpsCamera() {
   if (fpsCamera) {
-    // 重置摄像机位置
+    // Reset camera position
     fpsCamera.position.set(-1700, 12, 800);
-    fpsCamera.quaternion.set(0, 0, 0, 1); // 重置旋转
+    fpsCamera.quaternion.set(0, 0, 0, 1); // Reset rotation
     fpsCamera.up.set(0, 1, 0);
     
-    // 同步物理体位置到摄像机
+    // Synchronize physical body position to camera
     if (playerBody) {
       playerBody.setTranslation({
         x: fpsCamera.position.x,
@@ -1433,7 +1433,7 @@ function resetFpsCamera() {
       });
     }
     
-    // 解锁FPS控制（如果已锁定）
+    // Unlock FPS control (if locked)
     if (fpsControls && fpsControls.isLocked) {
       fpsControls.unlock();
     }
@@ -1442,27 +1442,27 @@ function resetFpsCamera() {
   }
 }
 
-// 移动FPS摄像机到shooting range位置
+// Move FPS camera to shooting range position
 function moveFpsCameraToShootingRange() {
   if (fpsCamera && playerBody && scene2Position) {
-    const targetPosition = scene2Position.clone().add(new THREE.Vector3(10, 15, 10)); // 场景2物体位置 + 相机高度偏移
+    const targetPosition = scene2Position.clone().add(new THREE.Vector3(10, 15, 10)); // scene2 object position + camera height offset
     const bodyPosition = {
       x: targetPosition.x,
       y: targetPosition.y - cameraYOffset,
       z: targetPosition.z
     };
     
-    // 立即设置物理体位置（对于 kinematic body，使用 setTranslation）
+    // Immediately set physical body position (for kinematic body, use setTranslation)
     playerBody.setTranslation(bodyPosition, true);
-    // 同时设置下一帧的位置，确保同步
+    // Set next frame position, ensure synchronization
     playerBody.setNextKinematicTranslation(bodyPosition);
     
-    // 设置相机位置
+    // Set camera position
     fpsCamera.position.copy(targetPosition);
-    fpsCamera.quaternion.set(0, 0, 0, 1); // 重置旋转
+    fpsCamera.quaternion.set(0, 0, 0, 1); // Reset rotation
     fpsCamera.up.set(0, 1, 0);
     
-    // 解锁FPS控制（如果已锁定）
+      // Unlock FPS control (if locked)
     if (fpsControls && fpsControls.isLocked) {
       fpsControls.unlock();
     }
@@ -1473,11 +1473,11 @@ function moveFpsCameraToShootingRange() {
   }
 }
 
-// 初始化主菜单
+// Initialize main menu
 function initMainMenu() {
   mainMenuEl = document.getElementById('main-menu');
   
-  // 选项1点击事件 - Level1
+  // Option1 clicked - Level1
   document.getElementById('menu-option-1').addEventListener('click', function() {
     console.log('Menu option 1 clicked - Level1');
     hideMainMenu();
@@ -1487,12 +1487,12 @@ function initMainMenu() {
         main();
     }else{
         isMenuVisible = false;
-        // 重置FPS摄像机位置
+        // Reset FPS camera position
         resetFpsCamera();
     }
   });
   
-  // 选项2点击事件 - DEBUG
+  // Option2 clicked - DEBUG
   document.getElementById('DEBUG').addEventListener('click', function() {
     console.log('DEBUG clicked');
     DEBUG = true;
@@ -1533,10 +1533,10 @@ function initMainMenu() {
         }, 10000);
     }else{
         isMenuVisible = false;
-        // 移动FPS摄像机到shooting range位置
+        // Move FPS camera to shooting range position
         moveFpsCameraToShootingRange();
     }
-    // 如果已经在射击场，可以添加切换逻辑
+    // If already in shooting range, can add switch logic
   });
   
 //   // 鼠标悬停效果
@@ -1551,7 +1551,7 @@ function initMainMenu() {
 //   });
 }
 
-// 显示主菜单
+// Show main menu
 function showMainMenu() {
   if (mainMenuEl) {
     mainMenuEl.style.display = 'flex';
@@ -1560,7 +1560,7 @@ function showMainMenu() {
   }
 }
 
-// 隐藏主菜单
+// Hide main menu
 function hideMainMenu() {
   if (mainMenuEl) {
     mainMenuEl.style.display = 'none';
@@ -1568,12 +1568,12 @@ function hideMainMenu() {
   }
 }
 
-// 显示Win消息并返回主菜单
+// Show Win message and return to main menu
 function showWinMessage() {
   if (winMessageEl) {
     winMessageEl.style.display = 'flex';
     
-    // 3秒后返回主菜单
+    // Return to main menu after 3 seconds
     setTimeout(() => {
       hideWinMessage();
       returnToMainMenu();
@@ -1581,16 +1581,16 @@ function showWinMessage() {
   }
 }
 
-// 隐藏Win消息
+// Hide Win message
 function hideWinMessage() {
   if (winMessageEl) {
     winMessageEl.style.display = 'none';
   }
 }
 
-// 返回主菜单（带清理逻辑）
+// Return to main menu (with cleanup logic)
 function returnToMainMenu() {
-  // 如果当前在level场景，销毁所有僵尸
+  // If current scene is level1, destroy all zombies
   if (currentSceneState === SceneState.LEVEL1) {
     destroyAllZombies({
       zombies: zombies,
@@ -1602,43 +1602,43 @@ function returnToMainMenu() {
     });
   }
   
-  // 解锁FPS控制（如果已锁定）
+  // Unlock FPS control (if locked)
   if (fpsControls && fpsControls.isLocked) {
     fpsControls.unlock();
   }
   
-  // 隐藏Win消息（如果显示）
+  // Hide Win message (if displayed)
   hideWinMessage();
   
-  // 显示主菜单
+  // Show main menu
   showMainMenu();
 }
 
-// 初始化主菜单
+  // Initialize main menu
 initMainMenu();
 
-// 全局H键监听器（在任何界面都可以按H返回主菜单）
+// Global H key listener (can press H to return to main menu on any interface)
 window.addEventListener('keydown', function(e) {
   if (e.code === 'KeyH') {
-    // 如果游戏已初始化，调用返回主菜单函数
+    // If game is initialized, call return to main menu function
     if (typeof returnToMainMenu === 'function') {
       returnToMainMenu();
     } else {
-      // 如果游戏还未初始化，直接显示主菜单
+      // If game is not initialized, show main menu directly
       showMainMenu();
     }
   }
 });
 
-// 启动render循环（即使菜单可见也要运行，以便菜单隐藏后能继续）
+// Start render loop (even if menu is visible, it will continue to run, so that the game can continue after the menu is hidden)
 function startRenderLoop() {
   function renderLoop(ts) {
-    // 如果菜单可见，只继续循环但不渲染游戏
+    // If menu is visible, only continue loop but not render game
     if (isMenuVisible) {
       requestAnimationFrame(renderLoop);
       return;
     }
-    // 如果游戏已初始化，调用render函数
+    // If game is initialized, call render function
     if (scene && renderer) {
       render(ts);
     } else {
@@ -1648,8 +1648,6 @@ function startRenderLoop() {
   requestAnimationFrame(renderLoop);
 }
 
-// 启动render循环
+// Start render loop
 startRenderLoop();
 
-// 不自动启动游戏，等待菜单选项触发
-// main(); // 注释掉自动启动

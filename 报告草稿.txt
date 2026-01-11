@@ -1,0 +1,20 @@
+section1
+
+How to start
+在Code目录下运行任意服务器
+使用浏览器访问对应的地址 选择 Game -> Game.js 即可进入游戏主界面
+出现如下页面后点击 xxxx
+即可进入游戏主界面
+
+section2
+游戏简要说明
+此游戏是一个fps游戏，玩家可以用不同的武器击杀地图内的僵尸，击杀数达到30即为完成目标
+
+section3
+About Game implemention
+
+Levels： 有一个level1，另外还有一个射击场作为两个完全不同的场景
+Light source：level1和射击场都有一个太阳光源，除此之外，虽然不在环境中存在，但是玩家身上带有两个独立光源。
+按F可以开启手电筒，这是一个跟随玩家视角和位置的spotlight光源，按4切换手雷丢出后，手雷具有红色point光源,并且本身材质具有红色的emission
+
+Camera: 游戏使用鼠标控制视角 并增加了俯仰角限制 使世界在玩家相机中始终是正的
