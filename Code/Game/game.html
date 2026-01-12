@@ -43,6 +43,12 @@
                 <button id="shooting-range" style="padding: 15px 40px; font-size: 24px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; transition: background-color 0.3s;">
                     Shooting Range
                 </button>
+                <!-- Camera Far Setting -->
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                    <label for="camera-far-input" style="color: white; font-size: 18px; font-weight: bold;">Camera Far:</label>
+                    <input type="number" id="camera-far-input" min="20" max="10000" value="5000" step="100" style="padding: 10px; font-size: 18px; border: 2px solid #4CAF50; border-radius: 5px; background-color: rgba(255, 255, 255, 0.9); color: #000; width: 200px;">
+                    <div style="color: #ccc; font-size: 14px;">Range: 20 - 10000</div>
+                </div>
             </div>
             <!-- Game Instructions Area -->
             <div id="game-instructions" style="flex: 1; background-color: rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 20px; max-width: 500px; max-height: 500px; overflow-y: auto;">

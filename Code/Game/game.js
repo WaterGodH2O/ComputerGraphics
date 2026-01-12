@@ -1,3 +1,4 @@
+// 1.191
 import * as THREE from '../Common/three.js-r170/build/three.module.js';
  import { TrackballControls } from '../Common/three.js-r170/examples/jsm/controls/TrackballControls.js';
  import { PointerLockControls } from '../Common/three.js-r170/examples/jsm/controls/PointerLockControls.js';
@@ -42,6 +43,7 @@ let zombieCountEl = null; // Zombie count display element
 let winMessageEl = null; // Win message element
 let sun, sunHelper, sunCamHelper;
 let stats;
+let cameraFar = 5000; // FPS camera far value, default 5000
 
 let initMap = false;
 
@@ -287,7 +289,107 @@ function updateColliderDebugs() {
   }
 }
 
+function createLevel1Zombies(){
+  spawnZombiesAround({
+    center: [-1972, 13, 1029],
+    count: 8,
+    radius: 140,
+    createOptions: {
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    }
+  }).then((createdZombies) => {
+    console.log('Zombies created successfully at [-1972, 13, 1029]:', createdZombies);
+  }).catch((err) => {
+    console.error('Failed to create zombies at [-1972, 13, 1029]:', err);
+  });
 
+  spawnZombiesAround({
+    center: [-3184, 13, 481],
+    count: 8,
+    radius: 140,
+    createOptions: {
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    }
+  });
+
+  spawnZombiesAround({
+    center: [-1637, 13, 255],
+    count: 8,
+    radius: 140,
+    createOptions: {
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    }
+  });
+
+  spawnZombiesAround({
+    center: [-1787, 13, 26],
+    count: 8,
+    radius: 140,
+    createOptions: {
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    }
+  });
+
+  spawnZombiesAround({
+    center: [-1364, 13, 493],
+    count: 8,
+    radius: 140,
+    createOptions: {
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    }
+  });
+
+  spawnZombiesAround({
+    center: [-1407, 15, 720],
+    count: 8,
+    radius: 140,
+    createOptions: {
+      scene: scene,
+      RAPIER: RAPIER,
+      world: world,
+      zombies: zombies,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects,
+      addColliderDebugCapsule: addColliderDebugCapsuleForBody
+    }
+  });
+}
 
 // FPS movement state
 const movement = {
@@ -331,6 +433,7 @@ const getJumpVelocity = () => Math.sqrt(2 * (-gravityAccel) * jumpHeight);
   
   -------------------------------- */
 function main() {
+  console.log('Main function started');
   canvas = document.getElementById("gl-canvas");
   renderer = new THREE.WebGLRenderer({ canvas });
   renderer.shadowMap.enabled = true;
@@ -346,8 +449,8 @@ function main() {
   createControls(camera);
   controls.update();
 
-  // Create FPS camera + controls
-  fpsCamera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+  // Create FPS camera + controls (use cameraFar variable for far value)
+  fpsCamera = new THREE.PerspectiveCamera(fov, aspect, near, cameraFar);
   // Do not set fpsCamera position here, position setting is done through key callback
   fpsCamera.rotation.order = 'YXZ';
   fpsControls = new PointerLockControls(fpsCamera, renderer.domElement);
@@ -403,6 +506,7 @@ function main() {
   // Unified initialization of HUD
   initPerfHUD();
   initDebugToggle();
+  console.log('Unified initialization of HUD');
 
   // get the crosshair element
   crosshairEl = document.getElementById('crosshair');
@@ -729,6 +833,16 @@ function main() {
 
   // Create all objects for scene1
   function createScene1() {
+    // Destroy all existing zombies before creating new ones (reset scene)
+    destroyAllZombies({
+      zombies: zombies,
+      scene: scene,
+      world: world,
+      zombieMixers: zombieMixers,
+      mixers: mixers,
+      dynamicGltfObjects: dynamicGltfObjects
+    });
+    
     scene.background = new THREE.Color('black');
 
     const loader = new GLTFLoader();
@@ -908,50 +1022,10 @@ function main() {
 
 
 
-    createZombieAt({
-      position: [-207, 20, -41],
-      scene: scene,
-      RAPIER: RAPIER,
-      world: world,
-      zombies: zombies,
-      zombieMixers: zombieMixers,
-      mixers: mixers,
-      dynamicGltfObjects: dynamicGltfObjects,
-      addColliderDebugCapsule: addColliderDebugCapsuleForBody
-    });
-    createZombieAt({
-      position: [-217, 20, -21],
-      scene: scene,
-      RAPIER: RAPIER,
-      world: world,
-      zombies: zombies,
-      zombieMixers: zombieMixers,
-      mixers: mixers,
-      dynamicGltfObjects: dynamicGltfObjects,
-      addColliderDebugCapsule: addColliderDebugCapsuleForBody
-    });
-    createZombieAt({
-      position: [-208, 30, -41],
-      scene: scene,
-      RAPIER: RAPIER,
-      world: world,
-      zombies: zombies,
-      zombieMixers: zombieMixers,
-      mixers: mixers,
-      dynamicGltfObjects: dynamicGltfObjects,
-      addColliderDebugCapsule: addColliderDebugCapsuleForBody
-    });
-    createZombieAt({
-      position: [-237, 20, -41],
-      scene: scene,
-      RAPIER: RAPIER,
-      world: world,
-      zombies: zombies,
-      zombieMixers: zombieMixers,
-      mixers: mixers,
-      dynamicGltfObjects: dynamicGltfObjects,
-      addColliderDebugCapsule: addColliderDebugCapsuleForBody
-    });
+
+    // Spawn zombies at multiple locations
+    
+    createLevel1Zombies();
 
     // car lights
     const pointLightAtPosition = new THREE.PointLight(0xffffaa, 400, 100);
@@ -1018,6 +1092,7 @@ function main() {
   // Grenade system functions are moved to modules/Grenades.js
 
   // create scene 1
+  console.log('Creating scene 1');
   createScene1();
   createScene2();
   
@@ -1026,6 +1101,9 @@ function main() {
   requestAnimationFrame(render);
 
   window.addEventListener('resize', onWindowResize);
+  
+  // 在进入游戏时进行一次窗口resize，使其适配打开游戏时的大小
+  onWindowResize();
 
 }
 
@@ -1473,13 +1551,43 @@ function moveFpsCameraToShootingRange() {
   }
 }
 
+// Update FPS camera far value
+function updateFpsCameraFar(newFar) {
+  if (fpsCamera) {
+    // Clamp value to valid range
+    const clampedFar = Math.max(20, Math.min(10000, newFar));
+    fpsCamera.far = clampedFar;
+    fpsCamera.updateProjectionMatrix();
+    cameraFar = clampedFar;
+    console.log('FPS camera far updated to:', clampedFar);
+  }
+}
+
 // Initialize main menu
 function initMainMenu() {
   mainMenuEl = document.getElementById('main-menu');
   
+  // Camera far input handler
+  const cameraFarInput = document.getElementById('camera-far-input');
+  if (cameraFarInput) {
+    cameraFarInput.value = cameraFar;
+    cameraFarInput.addEventListener('input', function() {
+      const newFar = parseFloat(this.value);
+      if (!isNaN(newFar)) {
+        updateFpsCameraFar(newFar);
+      }
+    });
+    cameraFarInput.addEventListener('change', function() {
+      const newFar = parseFloat(this.value);
+      if (!isNaN(newFar)) {
+        updateFpsCameraFar(newFar);
+      }
+    });
+  }
+  
   // Option1 clicked - Level1
   document.getElementById('menu-option-1').addEventListener('click', function() {
-    console.log('Menu option 1 clicked - Level1');
+    console.log('Menu option 1 clicked - Level1--');
     hideMainMenu();
     currentSceneState = SceneState.LEVEL1;
     if(!initMap) {
@@ -1487,6 +1595,17 @@ function initMainMenu() {
         main();
     }else{
         isMenuVisible = false;
+        // Destroy all zombies before resetting
+        destroyAllZombies({
+          zombies: zombies,
+          scene: scene,
+          world: world,
+          zombieMixers: zombieMixers,
+          mixers: mixers,
+          dynamicGltfObjects: dynamicGltfObjects
+        });
+
+        createLevel1Zombies();
         // Reset FPS camera position
         resetFpsCamera();
     }

@@ -260,8 +260,8 @@ export function setupGranadeExplosion({
   granadeInstance,
   scene,
   zombies,
-  explosionRadius = 80,
-  damage = 100,
+  explosionRadius = 130,
+  damage = 500,
   delay = 6000,
   hiddenPosition,
   onExplode = null

@@ -8,6 +8,17 @@ import { createDynamicGLTF } from './GLTFFactory.js';
  */
 
 /**
+ * find animation clip by name
+ * @param {Array} animations - array of animation clips
+ * @param {string} name - animation name to find
+ * @returns {THREE.AnimationClip|null} found animation clip or null
+ */
+function findAnimationByName(animations, name) {
+  if (!Array.isArray(animations)) return null;
+  return animations.find(clip => clip && clip.name === name) || null;
+}
+
+/**
  * create a single zombie
  * @param {Object} options - configuration options
  * @param {Array<number>} options.position - position [x, y, z]
@@ -131,13 +142,159 @@ export async function createZombieAt({
       z.mixer = zm;
       z.animations = gltf.animations;
       z.currentAction = null;
-      z.currentAnimIndex = null;
-      // initial state is idle, then play the animation with index 3 (if exists)
+      z.currentAnimName = null;
+      // initial state is idle, play the Idle animation
+      const idleClip = findAnimationByName(gltf.animations, 'Idle');
+      if (idleClip) {
+        const act = zm.clipAction(idleClip);
+        act.reset().setLoop(THREE.LoopRepeat).play();
+        z.currentAction = act;
+        z.currentAnimName = 'Idle';
+      }
 
-      const act = zm.clipAction(gltf.animations[3]);
-      act.reset().setLoop(THREE.LoopRepeat).play();
-      z.currentAction = act;
-      z.currentAnimIndex = 3;
+      resolve(z);
+    }, undefined, function (error) {
+      console.error(error);
+      resolve(null);
+    });
+  });
+}
+
+/**
+ * create a big zombie (larger, stronger version)
+ * @param {Object} options - configuration options
+ * @param {Array<number>} options.position - position [x, y, z]
+ * @param {THREE.Scene} options.scene - Three.js scene
+ * @param {Object} options.RAPIER - RAPIER object
+ * @param {Object} options.world - RAPIER physics world
+ * @param {Array} options.zombies - zombie array (for adding new zombie)
+ * @param {Array} options.zombieMixers - zombie mixer array
+ * @param {Array} options.mixers - mixer array (for updating)
+ * @param {Array} options.dynamicGltfObjects - dynamic GLTF object list
+ * @param {Function} options.addColliderDebugCapsule - debug function: add collider debug capsule
+ * @param {string} options.modelPath - zombie model path, default '../GlTF_Models/glTF/Zombie_Basic.gltf'
+ * @returns {Promise<Object>} { object, rigidBody, colliders, sync }: big zombie object
+ */
+export async function createBigZombieAt({
+  position,
+  scene,
+  RAPIER,
+  world,
+  zombies,
+  zombieMixers,
+  mixers,
+  dynamicGltfObjects,
+  addColliderDebugCapsule = null,
+  modelPath = '../GlTF_Models/glTF/Zombie_Arm.gltf'
+}) {
+  return new Promise((resolve) => {
+    const dynLoader = new GLTFLoader();
+    dynLoader.load(modelPath, function (gltf) {
+      const z = createDynamicGLTF({
+        object3d: gltf.scene,
+        position: position,
+        rotation: [0, 0, 0],
+        scale: [15, 15, 15], // larger scale for big zombie
+        enableShadows: true,
+        shape: 'box',
+        density: 0.8, // higher density
+        friction: 0.8,
+        restitution: 0.1,
+        damping: { lin: 0.1, ang: 0.1 },
+        canSleep: true,
+        enableCcd: true,
+        renderOffset: { x: 0, y: -15, z: 0 },
+        colliderScale: [0.6, 1.3, 0.9], // larger collider
+        lockXZRotation: true,
+        rapier: RAPIER,
+        rapierWorld: world,
+        scene: scene,
+        dynamicGltfObjects: dynamicGltfObjects,
+        addColliderDebugBox: null,
+        addColliderDebugCapsule: addColliderDebugCapsule
+      });
+      
+      if (zombies) {
+        zombies.push(z);
+      }
+      
+      // mark all sub meshes of the zombie with owner tag, for tracing back to the zombie object after hitting
+      if (z.object) {
+        z.object.traverse(o => {
+          if (!o.userData) o.userData = {};
+          o.userData.owner = z;
+        });
+      }
+      if (z && z.rigidBody) {
+        z.rigidBody.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+      }
+      z.vy = 0;
+      // zombie state: 'idle' | 'moving' | 'dead'
+      z.state = 'idle';
+      // health (set to 'dead' and stop moving when it is 0) - more health for big zombie
+      z.health = 300;
+      // mark as big zombie
+      z.isBigZombie = true;
+      // disable the original model compound box and the entity collision with the ground, to avoid interfering with the controller capsule (keep rendering/synchronization)
+      // should we really do this? ... mark it for now, not sure
+
+      for (const c of z.colliders) {
+        c.setSensor(true);
+      }
+
+      // character controller capsule - larger for big zombie
+      const bbox = new THREE.Box3().setFromObject(z.object);
+      const size = new THREE.Vector3();
+      bbox.getSize(size);
+      const minRadius = 0.3;
+      const radius = Math.max(minRadius, Math.min(size.x, size.z) * 0.35);
+      const halfHeight = Math.max(0.1, (size.y * 0.5) - radius) + 4; // taller capsule
+      const ctrl = world.createCollider(
+        RAPIER.ColliderDesc.capsule(halfHeight, radius)
+          .setFriction(0.0)
+          .setRestitution(0.0),
+        z.rigidBody
+      );
+      // zombie belongs to bit 1; filter collides with everything except player (bit 0)
+      ctrl.setCollisionGroups((0x0002 << 16) | (0xFFFF ^ 0x0001));
+      z.controllerCollider = ctrl;
+      
+      if (addColliderDebugCapsule) {
+        addColliderDebugCapsule(z.rigidBody, halfHeight, radius, 0x00ff00);
+      }
+
+      // character controller for every single zombie - stronger for big zombie
+      z.kcc = world.createCharacterController(0.5);
+      z.kcc.setUp({ x: 0, y: 1, z: 0 });
+      z.kcc.setSlideEnabled(true);
+      z.kcc.enableAutostep(0.4, 0.3, false);
+      z.kcc.setMaxSlopeClimbAngle(Math.PI * 0.5);
+      z.kcc.setMinSlopeSlideAngle(Math.PI * 0.9);
+      z.kcc.enableSnapToGround(0.3);
+      z.kcc.setApplyImpulsesToDynamicBodies(true);
+      z.kcc.setCharacterMass(400); // heavier for big zombie
+
+      // animation
+      const zm = new THREE.AnimationMixer(gltf.scene);
+      if (zombieMixers) {
+        zombieMixers.push(zm);
+      }
+      if (mixers) {
+        mixers.push(zm);
+      }
+      // record on the zombie object, for switching animation by state
+      z.mixer = zm;
+      z.animations = gltf.animations;
+      z.currentAction = null;
+      z.currentAnimName = null;
+      // initial state is idle, play the Idle animation
+      const idleClip = findAnimationByName(gltf.animations, 'Idle');
+      if (idleClip) {
+        const act = zm.clipAction(idleClip);
+        act.reset().setLoop(THREE.LoopRepeat).play();
+        z.currentAction = act;
+        z.currentAnimName = 'Idle';
+      }
 
       resolve(z);
     }, undefined, function (error) {
@@ -158,14 +315,22 @@ export async function createZombieAt({
  */
 export async function spawnZombiesAround({
   center,
-  count = 5,
-  radius = 80,
+  count = 8,
+  radius = 140,
   createOptions
 }) {
   const cx = Array.isArray(center) ? center[0] : center.x;
   const cy = Array.isArray(center) ? center[1] : center.y;
   const cz = Array.isArray(center) ? center[2] : center.z;
   const tasks = [];
+  
+  // create a big zombie at the center
+  tasks.push(createBigZombieAt({
+    ...createOptions,
+    position: [cx, cy, cz]
+  }));
+  
+  // create regular zombies around the center
   for (let i = 0; i < count; i++) {
     const ang = Math.random() * Math.PI * 2;
     const dist = Math.sqrt(Math.random()) * radius;
@@ -185,7 +350,7 @@ export async function spawnZombiesAround({
  * @param {Object} options - configuration options
  * @param {Array} options.zombies - zombie array
  * @param {number} options.dt - time difference (seconds)
- * @param {boolean} options.zombiesForward - whether to move zombies forward (press T)
+ * @param {boolean} options.zombiesForward - whether to stop zombies (press T to stop, default: moving)
  * @param {number} options.gravityAccel - gravity acceleration
  * @param {number} options.terminalFallSpeed - terminal fall speed
  * @param {number} options.moveSpeed - move speed, default 10
@@ -200,64 +365,86 @@ export function updateZombies({
 }) {
   if (!(zombies && zombies.length > 0)) return;
   
-  // mark all alive zombies as idle if not pressing T
-  if (!zombiesForward) {
+  // mark all alive zombies as idle if pressing T (zombiesForward = true means stop)
+  if (zombiesForward) {
     for (const z of zombies) {
       if (!z) continue;
       if (typeof z.health === 'number' && z.health <= 0) {
-        // switch to dead and play the death animation with index 1 (only play once)
+        // switch to dead and play the Death animation (only play once)
         if (z.state !== 'dead') {
           z.state = 'dead';
         }
-        if (Array.isArray(z.animations) && z.animations[1] && z.currentAnimIndex !== 1) {
-          if (z.currentAction && typeof z.currentAction.stop === 'function') {
-            z.currentAction.stop();
+        if (z.currentAnimName !== 'Death') {
+          const deathClip = findAnimationByName(z.animations, 'Death');
+          if (deathClip) {
+            if (z.currentAction && typeof z.currentAction.stop === 'function') {
+              z.currentAction.stop();
+            }
+            const act = z.mixer.clipAction(deathClip);
+            act.reset().setLoop(THREE.LoopOnce, 0);
+            act.clampWhenFinished = true;
+            act.play();
+            z.currentAction = act;
+            z.currentAnimName = 'Death';
           }
-          const act = z.mixer.clipAction(z.animations[1]);
-          act.reset().setLoop(THREE.LoopOnce, 0);
-          act.clampWhenFinished = true;
-          act.play();
-          z.currentAction = act;
-          z.currentAnimIndex = 1;
         }
         continue;
       }
       if (z.state !== 'dead') {
         z.state = 'idle';
-        // play the idle animation with index 3, to avoid repeated switching
-
-        if (z.currentAnimIndex !== 3) {
-          if (z.currentAction && typeof z.currentAction.stop === 'function') {
-            z.currentAction.stop();
+        // play the Idle animation, to avoid repeated switching
+        if (z.currentAnimName !== 'Idle') {
+          const idleClip = findAnimationByName(z.animations, 'Idle');
+          if (idleClip) {
+            if (z.currentAction && typeof z.currentAction.stop === 'function') {
+              z.currentAction.stop();
+            }
+            const act = z.mixer.clipAction(idleClip);
+            act.reset().setLoop(THREE.LoopRepeat).play();
+            z.currentAction = act;
+            z.currentAnimName = 'Idle';
           }
-          const act = z.mixer.clipAction(z.animations[3]);
-          act.reset().setLoop(THREE.LoopRepeat).play();
-          z.currentAction = act;
-          z.currentAnimIndex = 3;
         }
       }
     }
     return;
   }
   
-  // zombie movement logic
+  // zombie movement logic (default: zombies move when not pressing T)
   for (const z of zombies) {
     if (!z || !z.rigidBody || !z.kcc) continue;
-    // if dead, stop moving
+    // if dead, stop moving and play Death animation
     if (typeof z.health === 'number' && z.health <= 0) {
       z.state = 'dead';
+      if (z.currentAnimName !== 'Death') {
+        const deathClip = findAnimationByName(z.animations, 'Death');
+        if (deathClip) {
+          if (z.currentAction && typeof z.currentAction.stop === 'function') {
+            z.currentAction.stop();
+          }
+          const act = z.mixer.clipAction(deathClip);
+          act.reset().setLoop(THREE.LoopOnce, 0);
+          act.clampWhenFinished = true;
+          act.play();
+          z.currentAction = act;
+          z.currentAnimName = 'Death';
+        }
+      }
       continue;
     }
     z.state = 'moving';
-    // play the moving animation with index 13 (if already 13, don't switch again)
-    if (z.currentAnimIndex !== 13) {
-      if (z.currentAction && typeof z.currentAction.stop === 'function') {
-        z.currentAction.stop();
+    // play the Walk animation (if already Walk, don't switch again)
+    if (z.currentAnimName !== 'Walk') {
+      const walkClip = findAnimationByName(z.animations, 'Walk');
+      if (walkClip) {
+        if (z.currentAction && typeof z.currentAction.stop === 'function') {
+          z.currentAction.stop();
+        }
+        const act = z.mixer.clipAction(walkClip);
+        act.reset().setLoop(THREE.LoopRepeat).play();
+        z.currentAction = act;
+        z.currentAnimName = 'Walk';
       }
-      const act = z.mixer.clipAction(z.animations[13]);
-      act.reset().setLoop(THREE.LoopRepeat).play();
-      z.currentAction = act;
-      z.currentAnimIndex = 13;
     }
 
     // periodically set target yaw (around Y axis) and turn with a certain angular velocity
