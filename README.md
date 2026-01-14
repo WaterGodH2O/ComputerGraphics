@@ -86,7 +86,7 @@ You explore levels, fight zombies with multiple weapons, and reach the win condi
 ### 1）启动本地 HTTP 服务器
 
 Run the server from the **Code** directory (recommended).  
-建议在 **Code** 目录下启动本地服务器（更稳）。
+建议在 **Code** 目录下启动本地服务器。
 
 Example / 示例：
 ```bash
